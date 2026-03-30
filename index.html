@@ -27,7 +27,6 @@
             height: 100vh;
         }
 
-        /* الوضع الليلي */
         body.light-mode {
             background: #fff;
             color: #000;
@@ -39,7 +38,9 @@
         body.light-mode .compose-input { background: #f5f5f5; border-color: #eef2f5; color: #000; }
         body.light-mode .profile-panel { background: #fff; }
         body.light-mode .profile-btn-secondary { background: #eef2f5; color: #000; }
-        body.light-mode .search-input { background: #f5f5f5; border-color: #eef2f5; color: #000; }
+        body.light-mode .comments-panel { background: #fff; border-color: #eef2f5; }
+        body.light-mode .comment-input { background: #f5f5f5; border-color: #eef2f5; }
+        body.light-mode .reply-input { background: #f5f5f5; border-color: #eef2f5; }
 
         /* شاشة تسجيل الدخول */
         .auth-screen {
@@ -61,7 +62,7 @@
             text-align: center;
             border: 1px solid #2a2a2a;
         }
-        body.light-mode .auth-card { background: #fff; border-color: #eef2f5; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+        body.light-mode .auth-card { background: #fff; border-color: #eef2f5; }
         .auth-card h1 { font-size: 32px; font-weight: 800; margin-bottom: 30px; color: #1d9bf0; }
         .auth-card input {
             width: 100%;
@@ -102,10 +103,7 @@
             cursor: pointer;
             border-radius: 60px;
         }
-        .auth-tab.active {
-            background: #1d9bf0;
-            color: white;
-        }
+        .auth-tab.active { background: #1d9bf0; color: white; }
         .auth-form { display: none; }
         .auth-form.active { display: block; }
         .error-msg { color: #ff4444; font-size: 12px; margin-top: 8px; }
@@ -146,18 +144,16 @@
             align-items: center;
             justify-content: center;
         }
-        .mode-toggle { cursor: pointer; }
         .back-btn {
             background: none;
             border: none;
             color: #1d9bf0;
-            font-size: 24px;
+            font-size: 14px;
             cursor: pointer;
             display: none;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }
-        .back-btn i { font-size: 20px; }
 
         /* التغريدة */
         .feed-container { padding: 0 0 80px; }
@@ -206,7 +202,138 @@
         .tweet-action i { font-size: 18px; }
         .tweet-action.active { color: #f91880; }
         .tweet-action:hover { color: #1d9bf0; }
-        .tweet-stats { font-size: 12px; color: #666; margin-left: 8px; }
+
+        /* لوحة التعليقات المتطورة */
+        .comments-panel {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 400;
+            transform: translateX(100%);
+            transition: 0.3s;
+            display: flex;
+            flex-direction: column;
+        }
+        .comments-panel.open { transform: translateX(0); }
+        .comments-header {
+            padding: 16px;
+            border-bottom: 1px solid #2a2a2a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .comments-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .comment-item {
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2a2a2a;
+            padding-bottom: 12px;
+        }
+        .comment-header {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .comment-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #1d9bf0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .comment-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .comment-user { font-weight: bold; font-size: 14px; }
+        .comment-time { font-size: 10px; color: #888; }
+        .comment-text { font-size: 14px; margin: 8px 0; line-height: 1.4; }
+        .comment-actions {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+        }
+        .comment-action {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .reply-list {
+            margin-top: 12px;
+            margin-right: 48px;
+            padding-right: 12px;
+            border-right: 2px solid #1d9bf0;
+        }
+        .reply-item {
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .reply-header {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .reply-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: #1d9bf0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .reply-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .reply-user { font-weight: bold; font-size: 12px; }
+        .reply-text { font-size: 13px; margin: 4px 0; }
+        .comment-input-area {
+            padding: 16px;
+            border-top: 1px solid #2a2a2a;
+            background: #000;
+        }
+        .comment-input {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .comment-input input {
+            flex: 1;
+            padding: 12px 16px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 30px;
+            color: white;
+            font-size: 14px;
+        }
+        .reply-input-area {
+            margin-top: 8px;
+            display: none;
+        }
+        .reply-input {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .reply-input input {
+            flex: 1;
+            padding: 8px 12px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 30px;
+            color: white;
+            font-size: 13px;
+        }
 
         /* شريط سفلي */
         .bottom-nav {
@@ -268,7 +395,7 @@
             cursor: pointer;
         }
 
-        /* صفحة الملف الشخصي */
+        /* صفحة الملف الشخصي المتطورة */
         .profile-panel {
             position: fixed;
             inset: 0;
@@ -281,11 +408,28 @@
         .profile-panel.open { transform: translateX(0); }
         .profile-cover {
             width: 100%;
-            height: 150px;
+            height: 200px;
             background: linear-gradient(135deg, #1d9bf0, #f91880);
             cursor: pointer;
+            position: relative;
         }
-        .profile-info { padding: 0 20px 20px; position: relative; }
+        .profile-cover-edit {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .profile-info {
+            padding: 0 20px 20px;
+            position: relative;
+        }
         .profile-avatar {
             width: 100px;
             height: 100px;
@@ -298,12 +442,40 @@
             justify-content: center;
             overflow: hidden;
             cursor: pointer;
+            position: relative;
         }
-        .profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
-        .profile-name { font-size: 20px; font-weight: bold; margin-top: 12px; }
+        .profile-avatar-edit {
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .profile-name { font-size: 24px; font-weight: bold; margin-top: 12px; }
         .profile-bio { color: #888; font-size: 14px; margin: 8px 0; }
-        .profile-stats { display: flex; gap: 24px; margin: 16px 0; }
+        .profile-link {
+            color: #1d9bf0;
+            text-decoration: none;
+            font-size: 13px;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        .profile-stats {
+            display: flex;
+            gap: 32px;
+            margin: 20px 0;
+            padding: 12px 0;
+            border-top: 1px solid #2a2a2a;
+            border-bottom: 1px solid #2a2a2a;
+        }
         .profile-stats div { text-align: center; cursor: pointer; }
+        .profile-stats .stat-number { font-size: 20px; font-weight: bold; }
+        .profile-stats .stat-label { font-size: 12px; color: #888; }
         .profile-buttons { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
         .profile-btn {
             padding: 8px 24px;
@@ -314,9 +486,41 @@
         }
         .profile-btn-primary { background: #1d9bf0; color: white; }
         .profile-btn-secondary { background: #2a2a2a; color: white; }
-        .profile-tweets { border-top: 1px solid #2a2a2a; }
+        .profile-tabs {
+            display: flex;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .profile-tab {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            cursor: pointer;
+            color: #888;
+            font-weight: 500;
+        }
+        .profile-tab.active {
+            color: #1d9bf0;
+            border-bottom: 2px solid #1d9bf0;
+        }
+        .profile-posts-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2px;
+            margin-top: 8px;
+        }
+        .profile-post {
+            aspect-ratio: 1;
+            background: #1a1a2a;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .profile-post img, .profile-post video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
 
-        /* صفحة الدردشة */
+        /* صفحة الدردشة المتطورة */
         .chat-panel {
             position: fixed;
             inset: 0;
@@ -328,26 +532,87 @@
             flex-direction: column;
         }
         .chat-panel.open { transform: translateX(0); }
-        .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-        .chat-message { display: flex; gap: 8px; max-width: 85%; }
+        .chat-header {
+            padding: 16px;
+            border-bottom: 1px solid #2a2a2a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-user-info { display: flex; align-items: center; gap: 12px; }
+        .chat-user-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: #1d9bf0;
+            overflow: hidden;
+        }
+        .chat-user-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .chat-message {
+            display: flex;
+            gap: 8px;
+            max-width: 85%;
+        }
         .chat-message.sent { align-self: flex-end; flex-direction: row-reverse; }
         .message-bubble {
             background: #1a1a2a;
-            padding: 8px 12px;
-            border-radius: 18px;
+            padding: 10px 14px;
+            border-radius: 20px;
         }
         .message-bubble.sent { background: #1d9bf0; color: white; }
-        .message-audio audio { height: 40px; }
-        .chat-input {
+        .message-audio audio { height: 36px; }
+        .message-image { max-width: 200px; border-radius: 12px; cursor: pointer; }
+        .chat-input-area {
             display: flex;
             gap: 12px;
             padding: 12px;
             border-top: 1px solid #2a2a2a;
             background: #000;
         }
-        .chat-input input { flex: 1; padding: 10px; border: 1px solid #2a2a2a; border-radius: 30px; background: #111; color: white; }
-        .conversations-list { padding: 16px; overflow-y: auto; }
+        .chat-input-area input {
+            flex: 1;
+            padding: 10px 16px;
+            border: 1px solid #2a2a2a;
+            border-radius: 30px;
+            background: #111;
+            color: white;
+        }
+        .conversations-list {
+            padding: 16px;
+            overflow-y: auto;
+        }
         .conversation-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            border-bottom: 1px solid #2a2a2a;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .conversation-item:hover { background: #0a0a0a; }
+
+        /* لوحة المتابعين */
+        .followers-panel {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 450;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .followers-panel.open { transform: translateX(0); }
+        .followers-list { padding: 16px; }
+        .follower-item {
             display: flex;
             align-items: center;
             gap: 12px;
@@ -395,8 +660,16 @@
             border-radius: 30px;
             color: white;
         }
+        .search-result {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid #2a2a2a;
+            cursor: pointer;
+        }
 
-        /* لوحة القصص */
+        /* لوحة القصص المتطورة */
         .stories-panel {
             position: fixed;
             inset: 0;
@@ -409,25 +682,46 @@
         .stories-panel.open { transform: translateX(0); }
         .stories-row {
             display: flex;
-            gap: 16px;
-            padding: 16px;
+            gap: 20px;
+            padding: 20px;
             overflow-x: auto;
         }
-        .story-item {
+        .story-card {
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 8px;
             cursor: pointer;
+            min-width: 80px;
         }
         .story-ring {
-            width: 70px;
-            height: 70px;
+            width: 80px;
+            height: 80px;
             border-radius: 50%;
             background: linear-gradient(135deg, #1d9bf0, #f91880);
-            padding: 2px;
+            padding: 3px;
         }
-        .story-avatar { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: #111; }
+        .story-avatar {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+            background: #111;
+        }
+        .story-name { font-size: 12px; text-align: center; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+        .add-story-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: #1a1a2a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: #1d9bf0;
+            cursor: pointer;
+            border: 2px dashed #1d9bf0;
+        }
 
         .loading { text-align: center; padding: 50px; color: #888; }
         .spinner {
@@ -465,7 +759,7 @@
             <button onclick="register()">إنشاء حساب</button>
             <div id="regMsg" class="error-msg"></div>
         </div>
-        <div class="version">الإصدار 4.0 | مارس 2026</div>
+        <div class="version">الإصدار 5.0 | مارس 2026</div>
     </div>
 </div>
 
@@ -494,57 +788,64 @@
         <button class="nav-item" onclick="openMyProfile()"><i class="fas fa-user"></i></button>
     </div>
 
-    <!-- لوحة إنشاء منشور -->
-    <div id="composePanel" class="compose-panel">
-        <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
-            <h3 class="font-bold">إنشاء منشور</h3>
-            <button onclick="closeCompose()" class="text-2xl">&times;</button>
+    <!-- لوحة التعليقات المتطورة -->
+    <div id="commentsPanel" class="comments-panel">
+        <div class="comments-header">
+            <h3>التعليقات</h3>
+            <button onclick="closeComments()" class="text-2xl">&times;</button>
         </div>
-        <div class="compose-area">
-            <textarea id="postText" class="compose-input" placeholder="ماذا يحدث؟"></textarea>
-            <div id="mediaPreview" class="media-preview"></div>
-            <div class="compose-tools">
-                <button class="compose-tool" onclick="document.getElementById('postImage').click()"><i class="fas fa-image"></i></button>
-                <button class="compose-tool" onclick="document.getElementById('postVideo').click()"><i class="fas fa-video"></i></button>
-                <button class="compose-tool" onclick="startAudioRecording()" id="audioRecordBtn"><i class="fas fa-microphone"></i></button>
-                <input type="file" id="postImage" accept="image/*" style="display:none" onchange="previewMedia(this, 'image')">
-                <input type="file" id="postVideo" accept="video/*" style="display:none" onchange="previewMedia(this, 'video')">
+        <div id="commentsList" class="comments-list"></div>
+        <div class="comment-input-area">
+            <div class="comment-input">
+                <input type="text" id="commentInput" placeholder="أضف تعليقاً...">
+                <button onclick="addComment()" class="bg-[#1d9bf0] text-white px-4 py-2 rounded-full">نشر</button>
             </div>
-            <button onclick="createPost()" class="w-full bg-[#1d9bf0] text-white p-3 rounded-full font-bold mt-4">نشر</button>
-            <div id="postStatus" class="text-center mt-4 text-sm"></div>
         </div>
     </div>
 
-    <!-- صفحة الملف الشخصي -->
+    <!-- صفحة الملف الشخصي المتطورة -->
     <div id="profilePanel" class="profile-panel">
         <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
-            <h3 class="font-bold">الملف الشخصي</h3>
+            <h3>الملف الشخصي</h3>
             <button onclick="closeProfile()" class="text-2xl">&times;</button>
         </div>
-        <div id="profileCover" class="profile-cover" onclick="changeCover()"></div>
+        <div id="profileCover" class="profile-cover">
+            <div class="profile-cover-edit" onclick="changeCover()"><i class="fas fa-camera"></i></div>
+        </div>
         <div class="profile-info">
-            <div class="profile-avatar" id="profileAvatar" onclick="changeAvatar()">👤</div>
+            <div class="profile-avatar" id="profileAvatar">
+                👤
+                <div class="profile-avatar-edit" onclick="changeAvatar()"><i class="fas fa-camera fa-xs"></i></div>
+            </div>
             <div class="profile-name" id="profileName"></div>
             <div class="profile-bio" id="profileBio"></div>
+            <a href="#" class="profile-link" id="profileLink"></a>
             <div class="profile-stats">
-                <div onclick="viewProfileTweets()"><div class="text-xl font-bold" id="profilePosts">0</div><div class="text-xs text-gray-500">منشورات</div></div>
-                <div onclick="viewProfileFollowers()"><div class="text-xl font-bold" id="profileFollowers">0</div><div class="text-xs text-gray-500">متابع</div></div>
-                <div onclick="viewProfileFollowing()"><div class="text-xl font-bold" id="profileFollowing">0</div><div class="text-xs text-gray-500">يتابع</div></div>
+                <div onclick="openFollowersList('followers')"><div class="stat-number" id="profileFollowersCount">0</div><div class="stat-label">متابع</div></div>
+                <div onclick="openFollowersList('following')"><div class="stat-number" id="profileFollowingCount">0</div><div class="stat-label">يتابع</div></div>
+                <div><div class="stat-number" id="profilePostsCount">0</div><div class="stat-label">منشورات</div></div>
             </div>
             <div id="profileButtons" class="profile-buttons"></div>
         </div>
-        <div id="profilePostsList" class="profile-tweets"></div>
-        <div class="text-center text-xs text-gray-600 py-4">UltraSocial | الإصدار 4.0</div>
+        <div class="profile-tabs">
+            <button class="profile-tab active" data-tab="posts">منشورات</button>
+            <button class="profile-tab" data-tab="media">وسائط</button>
+            <button class="profile-tab" data-tab="likes">إعجابات</button>
+        </div>
+        <div id="profilePostsGrid" class="profile-posts-grid"></div>
     </div>
 
     <!-- صفحة الدردشة -->
     <div id="chatPanel" class="chat-panel">
-        <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
-            <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-full bg-[#1d9bf0] flex items-center justify-center" id="chatAvatar">👤</div><h3 id="chatUserName">محادثة</h3></div>
+        <div class="chat-header">
+            <div class="chat-user-info">
+                <div class="chat-user-avatar" id="chatAvatar">👤</div>
+                <h3 id="chatUserName">محادثة</h3>
+            </div>
             <button onclick="closeChat()" class="text-2xl">&times;</button>
         </div>
         <div id="chatMessages" class="chat-messages"></div>
-        <div class="chat-input">
+        <div class="chat-input-area">
             <button onclick="startRecordingChat()" id="chatRecordBtn"><i class="fas fa-microphone"></i></button>
             <input type="file" id="chatImageInput" accept="image/*" style="display:none" onchange="sendChatImage(this)">
             <button onclick="document.getElementById('chatImageInput').click()"><i class="fas fa-image"></i></button>
@@ -555,11 +856,20 @@
 
     <!-- قائمة المحادثات -->
     <div id="conversationsPanel" class="chat-panel">
-        <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
+        <div class="chat-header">
             <h3>الرسائل</h3>
             <button onclick="closeConversations()" class="text-2xl">&times;</button>
         </div>
         <div id="conversationsList" class="conversations-list"></div>
+    </div>
+
+    <!-- لوحة المتابعين -->
+    <div id="followersPanel" class="followers-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
+            <h3 id="followersTitle">المتابعون</h3>
+            <button onclick="closeFollowers()" class="text-2xl">&times;</button>
+        </div>
+        <div id="followersList" class="followers-list"></div>
     </div>
 
     <!-- لوحة الإشعارات -->
@@ -581,14 +891,18 @@
         <div id="searchResults"></div>
     </div>
 
-    <!-- لوحة القصص -->
+    <!-- لوحة القصص المتطورة -->
     <div id="storiesPanel" class="stories-panel">
         <div class="flex justify-between items-center p-4 border-b border-[#2a2a2a]">
             <h3>القصص</h3>
             <button onclick="closeStories()" class="text-2xl">&times;</button>
         </div>
-        <div class="stories-row" id="storiesList"></div>
-        <div class="p-4"><button onclick="addStory()" class="bg-[#1d9bf0] p-3 rounded-full w-full">أضف قصة</button></div>
+        <div class="stories-row" id="storiesList">
+            <div class="story-card" onclick="addStory()">
+                <div class="add-story-btn"><i class="fas fa-plus"></i></div>
+                <div class="story-name">أضف قصة</div>
+            </div>
+        </div>
     </div>
 </div>
 
