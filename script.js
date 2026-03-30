@@ -11,6 +11,8 @@ let selectedMediaFile = null;
 let selectedMediaType = null;
 let currentChatUserId = null;
 let viewingProfileUserId = null;
+let currentPostForComments = null;
+let currentCommentForReply = null;
 let mediaRecorder = null;
 let audioChunks = [];
 
@@ -59,7 +61,7 @@ window.register = async function() {
     try {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await set(ref(db, `users/${userCredential.user.uid}`), {
-            name, email, bio: '', avatarUrl: '', coverUrl: '', followers: {}, following: {}, createdAt: Date.now()
+            name, email, bio: '', avatarUrl: '', coverUrl: '', link: '', followers: {}, following: {}, createdAt: Date.now()
         });
         msg.innerText = '';
     } catch (error) {
@@ -128,7 +130,7 @@ function renderFeed() {
                     ${mediaHtml}
                     <div class="tweet-actions">
                         <button class="tweet-action ${isLiked ? 'active' : ''}" onclick="toggleLike('${post.id}', this)"><i class="fas fa-heart"></i> <span>${post.likes || 0}</span></button>
-                        <button class="tweet-action" onclick="openCommentModal('${post.id}')"><i class="fas fa-comment"></i> <span>${commentsCount}</span></button>
+                        <button class="tweet-action" onclick="openCommentsModal('${post.id}')"><i class="fas fa-comment"></i> <span>${commentsCount}</span></button>
                         <button class="tweet-action ${isRetweeted ? 'active' : ''}" onclick="retweet('${post.id}', this)"><i class="fas fa-retweet"></i> <span>${retweetCount}</span></button>
                         <button class="tweet-action" onclick="sharePost('${post.id}')"><i class="fas fa-share"></i></button>
                     </div>
@@ -157,8 +159,15 @@ async function uploadMedia(file) {
 }
 
 // ========== إنشاء منشور ==========
-window.openCompose = function() { document.getElementById('composePanel').classList.add('open'); resetCompose(); };
-window.closeCompose = function() { document.getElementById('composePanel').classList.remove('open'); };
+window.openCompose = function() { 
+    document.getElementById('composePanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
+    resetCompose();
+};
+window.closeCompose = function() { 
+    document.getElementById('composePanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
 
 function resetCompose() {
     document.getElementById('postText').value = '';
@@ -255,7 +264,144 @@ window.createPost = async function() {
     }
 };
 
-// ========== التفاعلات ==========
+// ========== التعليقات المتطورة مع الردود ==========
+window.openCommentsModal = async function(postId) {
+    currentPostForComments = postId;
+    const post = allPosts.find(p => p.id === postId);
+    if (!post) return;
+    
+    const container = document.getElementById('commentsList');
+    const comments = post.comments || {};
+    
+    container.innerHTML = '';
+    Object.values(comments).sort((a,b) => b.timestamp - a.timestamp).forEach(comment => {
+        const user = allUsers[comment.userId] || { name: comment.username || 'user', avatarUrl: '' };
+        const replies = comment.replies || {};
+        
+        const commentDiv = document.createElement('div');
+        commentDiv.className = 'comment-item';
+        commentDiv.id = `comment-${comment.id}`;
+        commentDiv.innerHTML = `
+            <div class="comment-header">
+                <div class="comment-avatar" onclick="viewProfile('${comment.userId}')">${user.avatarUrl ? `<img src="${user.avatarUrl}">` : (user.name?.charAt(0) || '👤')}</div>
+                <div>
+                    <div class="comment-user" onclick="viewProfile('${comment.userId}')">${user.name}</div>
+                    <div class="comment-time">${new Date(comment.timestamp).toLocaleString()}</div>
+                </div>
+            </div>
+            <div class="comment-text">${comment.text}</div>
+            <div class="comment-actions">
+                <button class="comment-action" onclick="showReplyInput('${comment.id}')"><i class="fas fa-reply"></i> رد</button>
+                <button class="comment-action" onclick="likeComment('${postId}', '${comment.id}')"><i class="fas fa-heart"></i> ${comment.likes || 0}</button>
+            </div>
+            <div id="reply-input-${comment.id}" class="reply-input-area"></div>
+            <div id="replies-${comment.id}" class="reply-list"></div>
+        `;
+        
+        // إضافة الردود
+        const repliesContainer = commentDiv.querySelector(`#replies-${comment.id}`);
+        Object.values(replies).sort((a,b) => a.timestamp - b.timestamp).forEach(reply => {
+            const replyUser = allUsers[reply.userId] || { name: reply.username || 'user', avatarUrl: '' };
+            repliesContainer.innerHTML += `
+                <div class="reply-item">
+                    <div class="reply-header">
+                        <div class="reply-avatar" onclick="viewProfile('${reply.userId}')">${replyUser.avatarUrl ? `<img src="${replyUser.avatarUrl}">` : (replyUser.name?.charAt(0) || '👤')}</div>
+                        <div class="reply-user" onclick="viewProfile('${reply.userId}')">${replyUser.name}</div>
+                        <div class="comment-time">${new Date(reply.timestamp).toLocaleTimeString()}</div>
+                    </div>
+                    <div class="reply-text">${reply.text}</div>
+                </div>
+            `;
+        });
+        
+        container.appendChild(commentDiv);
+    });
+    
+    document.getElementById('commentsPanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
+    document.getElementById('commentInput').value = '';
+};
+
+window.closeComments = function() {
+    document.getElementById('commentsPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+    currentPostForComments = null;
+};
+
+window.showReplyInput = function(commentId) {
+    const replyDiv = document.getElementById(`reply-input-${commentId}`);
+    if (replyDiv.innerHTML) {
+        replyDiv.innerHTML = '';
+        return;
+    }
+    replyDiv.innerHTML = `
+        <div class="reply-input">
+            <input type="text" id="reply-text-${commentId}" placeholder="اكتب رداً...">
+            <button onclick="addReply('${commentId}')" class="bg-[#1d9bf0] text-white px-3 py-1 rounded-full text-sm">نشر</button>
+        </div>
+    `;
+};
+
+window.addReply = async function(commentId) {
+    const text = document.getElementById(`reply-text-${commentId}`).value;
+    if (!text.trim()) return;
+    
+    const postRef = ref(db, `posts/${currentPostForComments}/comments/${commentId}/replies`);
+    const replyId = Date.now().toString();
+    await update(postRef, {
+        [replyId]: {
+            id: replyId,
+            userId: currentUser.uid,
+            username: currentUserData?.name,
+            text: text,
+            timestamp: Date.now()
+        }
+    });
+    
+    document.getElementById(`reply-input-${commentId}`).innerHTML = '';
+    openCommentsModal(currentPostForComments);
+    addNotification(allPosts.find(p => p.id === currentPostForComments)?.sender, 'comment');
+};
+
+window.addComment = async function() {
+    const text = document.getElementById('commentInput').value;
+    if (!text.trim() || !currentPostForComments) return;
+    
+    const commentId = Date.now().toString();
+    const postRef = ref(db, `posts/${currentPostForComments}/comments/${commentId}`);
+    await set(postRef, {
+        id: commentId,
+        userId: currentUser.uid,
+        username: currentUserData?.name,
+        text: text,
+        likes: 0,
+        likedBy: {},
+        replies: {},
+        timestamp: Date.now()
+    });
+    
+    document.getElementById('commentInput').value = '';
+    openCommentsModal(currentPostForComments);
+    const post = allPosts.find(p => p.id === currentPostForComments);
+    if (post && post.sender !== currentUser.uid) addNotification(post.sender, 'comment');
+};
+
+window.likeComment = async function(postId, commentId) {
+    const commentRef = ref(db, `posts/${postId}/comments/${commentId}`);
+    const snap = await get(commentRef);
+    const comment = snap.val();
+    let likes = comment.likes || 0;
+    let likedBy = comment.likedBy || {};
+    if (likedBy[currentUser.uid]) {
+        likes--; delete likedBy[currentUser.uid];
+    } else {
+        likes++; likedBy[currentUser.uid] = true;
+    }
+    await update(commentRef, { likes, likedBy });
+    openCommentsModal(postId);
+};
+
+// ========== التفاعلات الأساسية ==========
 window.toggleLike = async function(postId, btn) {
     if (!currentUser) return;
     const postRef = ref(db, `posts/${postId}`);
@@ -296,25 +442,6 @@ window.sharePost = function(postId) {
     alert('✅ تم نسخ رابط المنشور');
 };
 
-window.openCommentModal = function(postId) {
-    const comment = prompt('أضف تعليقاً:');
-    if (comment && comment.trim()) {
-        addComment(postId, comment);
-    }
-};
-
-async function addComment(postId, text) {
-    await push(ref(db, `posts/${postId}/comments`), {
-        userId: currentUser.uid,
-        username: currentUserData?.name,
-        text: text,
-        timestamp: Date.now()
-    });
-    const post = allPosts.find(p => p.id === postId);
-    if (post && post.sender !== currentUser.uid) addNotification(post.sender, 'comment');
-    renderFeed();
-}
-
 // ========== الإشعارات ==========
 async function addNotification(targetUserId, type) {
     if (targetUserId === currentUser.uid) return;
@@ -325,6 +452,20 @@ async function addNotification(targetUserId, type) {
     await push(ref(db, `notifications/${targetUserId}`), {
         type, fromUserId: currentUser.uid, fromUsername: currentUserData?.name,
         message: messages[type], timestamp: Date.now(), read: false
+    });
+    updateNotificationBadge();
+}
+
+function updateNotificationBadge() {
+    onValue(ref(db, `notifications/${currentUser?.uid}`), (snap) => {
+        const notifs = snap.val() || {};
+        const unread = Object.values(notifs).filter(n => !n.read).length;
+        const icon = document.getElementById('notifIcon');
+        if (unread > 0) {
+            icon.innerHTML = `<i class="fas fa-bell"></i><span class="notification-badge">${unread}</span>`;
+        } else {
+            icon.innerHTML = '<i class="far fa-bell"></i>';
+        }
     });
 }
 
@@ -339,56 +480,54 @@ window.openNotifications = async function() {
         if (!n.read) update(ref(db, `notifications/${currentUser.uid}/${Object.keys(notifs).find(k => notifs[k] === n)}`), { read: true });
     });
     panel.classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
 };
-window.closeNotifications = function() { document.getElementById('notificationsPanel').classList.remove('open'); };
+window.closeNotifications = function() { 
+    document.getElementById('notificationsPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
 
-// ========== الملف الشخصي ==========
+// ========== الملف الشخصي المتطور ==========
 window.openMyProfile = function() { viewProfile(currentUser.uid); };
 window.viewProfile = async function(userId) {
     if (!userId) return;
     viewingProfileUserId = userId;
     await loadProfileData(userId);
     document.getElementById('profilePanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
 };
-window.closeProfile = function() { document.getElementById('profilePanel').classList.remove('open'); viewingProfileUserId = null; };
+window.closeProfile = function() { 
+    document.getElementById('profilePanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+    viewingProfileUserId = null;
+};
 
 async function loadProfileData(userId) {
     const userSnap = await get(child(ref(db), `users/${userId}`));
     const user = userSnap.val();
     if (!user) return;
+    
     const coverEl = document.getElementById('profileCover');
     if (user.coverUrl) coverEl.style.background = `url(${user.coverUrl}) center/cover`;
     else coverEl.style.background = 'linear-gradient(135deg, #1d9bf0, #f91880)';
+    
     document.getElementById('profileAvatar').innerHTML = user.avatarUrl ? `<img src="${user.avatarUrl}">` : (user.name?.charAt(0) || '👤');
     document.getElementById('profileName').innerText = user.name;
     document.getElementById('profileBio').innerText = user.bio || '';
-    const userPosts = allPosts.filter(p => p.sender === userId);
-    document.getElementById('profilePosts').innerText = userPosts.length;
-    document.getElementById('profileFollowers').innerText = Object.keys(user.followers || {}).length;
-    document.getElementById('profileFollowing').innerText = Object.keys(user.following || {}).length;
+    document.getElementById('profileLink').innerHTML = user.link || '';
+    document.getElementById('profileLink').href = user.link || '#';
     
-    const postsContainer = document.getElementById('profilePostsList');
-    postsContainer.innerHTML = '';
-    userPosts.forEach(post => {
-        const div = document.createElement('div');
-        div.className = 'tweet-card';
-        let mediaHtml = '';
-        if (post.mediaUrl) {
-            if (post.mediaType === 'image') mediaHtml = `<div class="tweet-media mt-2"><img src="${post.mediaUrl}"></div>`;
-            else if (post.mediaType === 'video') mediaHtml = `<div class="tweet-media mt-2"><video controls src="${post.mediaUrl}"></video></div>`;
-            else if (post.mediaType === 'audio') mediaHtml = `<div class="tweet-media mt-2"><audio controls src="${post.mediaUrl}"></audio></div>`;
-        }
-        div.innerHTML = `
-            <div class="tweet-content">${post.text || ''}</div>
-            ${mediaHtml}
-            <div class="tweet-actions mt-2">
-                <span class="text-sm text-gray-500"><i class="fas fa-heart"></i> ${post.likes || 0}</span>
-                <span class="text-sm text-gray-500"><i class="fas fa-comment"></i> ${Object.keys(post.comments || {}).length}</span>
-                <span class="text-sm text-gray-500"><i class="fas fa-retweet"></i> ${Object.keys(post.retweets || {}).length}</span>
-            </div>
-        `;
-        postsContainer.appendChild(div);
-    });
+    const userPosts = allPosts.filter(p => p.sender === userId);
+    document.getElementById('profilePostsCount').innerText = userPosts.length;
+    document.getElementById('profileFollowersCount').innerText = Object.keys(user.followers || {}).length;
+    document.getElementById('profileFollowingCount').innerText = Object.keys(user.following || {}).length;
+    
+    const grid = document.getElementById('profilePostsGrid');
+    grid.innerHTML = userPosts.map(post => `
+        <div class="profile-post" onclick="openModalForPost('${post.id}')">
+            ${post.mediaUrl ? (post.mediaType === 'image' ? `<img src="${post.mediaUrl}">` : post.mediaType === 'video' ? `<video src="${post.mediaUrl}"></video>` : `<div class="flex items-center justify-center h-full"><i class="fas fa-music text-2xl"></i></div>`) : `<div class="flex items-center justify-center h-full"><i class="fas fa-file-alt text-2xl"></i></div>`}
+        </div>
+    `).join('');
     
     const buttonsDiv = document.getElementById('profileButtons');
     buttonsDiv.innerHTML = '';
@@ -400,29 +539,33 @@ async function loadProfileData(userId) {
         buttonsDiv.innerHTML = `<button class="profile-btn profile-btn-primary" onclick="toggleFollow('${userId}', this)">${isFollowing ? 'متابع' : 'متابعة'}</button>
                                 <button class="profile-btn profile-btn-secondary" onclick="openPrivateChat('${userId}')"><i class="fas fa-envelope"></i> مراسلة</button>`;
     }
+    
+    // تبويبات الملف الشخصي
+    document.querySelectorAll('.profile-tab').forEach(tab => {
+        tab.onclick = () => {
+            document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const filter = tab.dataset.tab;
+            let filteredPosts = userPosts;
+            if (filter === 'media') filteredPosts = userPosts.filter(p => p.mediaUrl && p.mediaType !== 'none');
+            if (filter === 'likes') filteredPosts = userPosts.filter(p => p.likedBy && p.likedBy[currentUser?.uid]);
+            grid.innerHTML = filteredPosts.map(post => `
+                <div class="profile-post" onclick="openModalForPost('${post.id}')">
+                    ${post.mediaUrl ? (post.mediaType === 'image' ? `<img src="${post.mediaUrl}">` : post.mediaType === 'video' ? `<video src="${post.mediaUrl}"></video>` : `<div class="flex items-center justify-center h-full"><i class="fas fa-music text-2xl"></i></div>`) : `<div class="flex items-center justify-center h-full"><i class="fas fa-file-alt text-2xl"></i></div>`}
+                </div>
+            `).join('');
+        };
+    });
 }
-
-window.toggleFollow = async function(userId, btn) {
-    if (!currentUser || currentUser.uid === userId) return;
-    const userRef = ref(db, `users/${currentUser.uid}/following/${userId}`);
-    const targetRef = ref(db, `users/${userId}/followers/${currentUser.uid}`);
-    const snap = await get(userRef);
-    if (snap.exists()) {
-        await set(userRef, null); await set(targetRef, null); btn.innerText = 'متابعة';
-        addNotification(userId, 'unfollow');
-    } else {
-        await set(userRef, true); await set(targetRef, true); btn.innerText = 'متابع';
-        addNotification(userId, 'follow');
-    }
-    if (viewingProfileUserId === userId) await loadProfileData(userId);
-};
 
 window.openEditProfile = function() {
     const newName = prompt('الاسم الجديد:', currentUserData?.name);
     const newBio = prompt('السيرة الذاتية:', currentUserData?.bio || '');
+    const newLink = prompt('الرابط الشخصي:', currentUserData?.link || '');
     if (newName) update(ref(db, `users/${currentUser.uid}`), { name: newName });
     if (newBio !== null) update(ref(db, `users/${currentUser.uid}`), { bio: newBio });
-    if (newName || newBio !== null) location.reload();
+    if (newLink !== null) update(ref(db, `users/${currentUser.uid}`), { link: newLink });
+    if (newName || newBio !== null || newLink !== null) location.reload();
 };
 
 window.changeAvatar = function() { document.getElementById('avatarInput').click(); };
@@ -435,7 +578,6 @@ document.getElementById('avatarInput')?.addEventListener('change', async (e) => 
     await update(ref(db, `users/${currentUser.uid}`), { avatarUrl: result.url });
     location.reload();
 });
-
 document.getElementById('coverInput')?.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -458,6 +600,53 @@ coverInput.id = 'coverInput';
 coverInput.style.display = 'none';
 document.body.appendChild(coverInput);
 
+// ========== متابعة المستخدمين ==========
+window.toggleFollow = async function(userId, btn) {
+    if (!currentUser || currentUser.uid === userId) return;
+    const userRef = ref(db, `users/${currentUser.uid}/following/${userId}`);
+    const targetRef = ref(db, `users/${userId}/followers/${currentUser.uid}`);
+    const snap = await get(userRef);
+    if (snap.exists()) {
+        await set(userRef, null); await set(targetRef, null); btn.innerText = 'متابعة';
+        addNotification(userId, 'unfollow');
+    } else {
+        await set(userRef, true); await set(targetRef, true); btn.innerText = 'متابع';
+        addNotification(userId, 'follow');
+    }
+    if (viewingProfileUserId === userId) await loadProfileData(userId);
+};
+
+// ========== قائمة المتابعين ==========
+window.openFollowersList = async function(type) {
+    const title = type === 'followers' ? 'المتابعون' : 'المتابَعون';
+    document.getElementById('followersTitle').innerText = title;
+    const panel = document.getElementById('followersPanel');
+    const container = document.getElementById('followersList');
+    const user = viewingProfileUserId ? allUsers[viewingProfileUserId] : currentUserData;
+    const list = type === 'followers' ? user?.followers : user?.following;
+    container.innerHTML = '';
+    if (list) {
+        for (const [uid] of Object.entries(list)) {
+            const u = allUsers[uid];
+            if (u) {
+                container.innerHTML += `
+                    <div class="follower-item" onclick="viewProfile('${uid}')">
+                        <div class="w-12 h-12 rounded-full bg-[#1d9bf0] flex items-center justify-center">${u.avatarUrl ? `<img src="${u.avatarUrl}" class="w-full h-full rounded-full object-cover">` : (u.name?.charAt(0) || '👤')}</div>
+                        <div><div class="font-bold">${u.name}</div><div class="text-sm text-gray-500">@${u.name?.toLowerCase().replace(/\s/g, '')}</div></div>
+                    </div>
+                `;
+            }
+        }
+    }
+    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا يوجد مستخدمين</div>';
+    panel.classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
+};
+window.closeFollowers = function() {
+    document.getElementById('followersPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
+
 // ========== الدردشة الخاصة ==========
 function getChatId(uid1, uid2) { return uid1 < uid2 ? `${uid1}_${uid2}` : `${uid2}_${uid1}`; }
 
@@ -471,23 +660,32 @@ window.openConversations = async function() {
     for (const [otherId, convData] of Object.entries(conversations)) {
         const otherUser = allUsers[otherId];
         if (!otherUser) continue;
-        container.innerHTML += `<div class="conversation-item" onclick="openPrivateChat('${otherId}')"><div class="w-12 h-12 rounded-full bg-pink-500 flex items-center justify-center">${otherUser.avatarUrl ? `<img src="${otherUser.avatarUrl}">` : (otherUser.name?.charAt(0) || 'U')}</div><div><div class="font-bold">${otherUser.name}</div><div class="text-sm text-gray-500">${convData.lastMessage?.substring(0, 40)}</div></div></div>`;
+        container.innerHTML += `<div class="conversation-item" onclick="openPrivateChat('${otherId}')"><div class="w-12 h-12 rounded-full bg-[#1d9bf0] flex items-center justify-center">${otherUser.avatarUrl ? `<img src="${otherUser.avatarUrl}">` : (otherUser.name?.charAt(0) || 'U')}</div><div><div class="font-bold">${otherUser.name}</div><div class="text-sm text-gray-500">${convData.lastMessage?.substring(0, 40)}</div></div></div>`;
     }
     if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد محادثات بعد</div>';
     panel.classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
 };
-window.closeConversations = function() { document.getElementById('conversationsPanel').classList.remove('open'); };
+window.closeConversations = function() { 
+    document.getElementById('conversationsPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
 
 window.openPrivateChat = async function(otherUserId) {
     currentChatUserId = otherUserId;
     const user = allUsers[otherUserId];
     document.getElementById('chatUserName').innerText = user?.name || 'مستخدم';
-    document.getElementById('chatAvatar').innerHTML = user?.avatarUrl ? `<img src="${user.avatarUrl}">` : (user?.name?.charAt(0) || 'U');
+    document.getElementById('chatAvatar').innerHTML = user?.avatarUrl ? `<img src="${user.avatarUrl}" class="w-full h-full rounded-full object-cover">` : (user?.name?.charAt(0) || 'U');
     await loadPrivateMessages(otherUserId);
     document.getElementById('chatPanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
     closeConversations();
 };
-window.closeChat = function() { document.getElementById('chatPanel').classList.remove('open'); currentChatUserId = null; };
+window.closeChat = function() { 
+    document.getElementById('chatPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+    currentChatUserId = null;
+};
 
 async function loadPrivateMessages(otherUserId) {
     const container = document.getElementById('chatMessages');
@@ -502,7 +700,7 @@ async function loadPrivateMessages(otherUserId) {
         const time = new Date(msg.timestamp).toLocaleTimeString();
         let content = '';
         if (msg.type === 'text') content = `<div class="message-bubble ${isSent ? 'sent' : 'received'}">${msg.text}</div>`;
-        else if (msg.type === 'image') content = `<img src="${msg.imageUrl}" class="max-w-[200px] rounded-lg cursor-pointer" onclick="window.open('${msg.imageUrl}')">`;
+        else if (msg.type === 'image') content = `<img src="${msg.imageUrl}" class="message-image" onclick="window.open('${msg.imageUrl}')">`;
         else if (msg.type === 'audio') content = `<div class="message-audio"><audio controls src="${msg.audioUrl}"></audio></div>`;
         container.innerHTML += `<div class="chat-message ${isSent ? 'sent' : 'received'}"><div>${content}<div class="text-[10px] opacity-50 mt-1">${time}</div></div></div>`;
     }
@@ -564,25 +762,7 @@ window.startRecordingChat = async function() {
     } catch (err) { alert('لا يمكن الوصول إلى الميكروفون'); }
 };
 
-// ========== البحث ==========
-window.openSearch = function() { document.getElementById('searchPanel').classList.add('open'); };
-window.closeSearch = function() { document.getElementById('searchPanel').classList.remove('open'); };
-window.searchAll = function() {
-    const query = document.getElementById('searchInput').value.toLowerCase();
-    const resultsDiv = document.getElementById('searchResults');
-    if (!query) { resultsDiv.innerHTML = ''; return; }
-    const users = Object.values(allUsers).filter(u => u.name?.toLowerCase().includes(query));
-    const posts = allPosts.filter(p => p.text?.toLowerCase().includes(query));
-    const hashtags = [...new Set(allPosts.flatMap(p => (p.text?.match(/#\w+/g) || []).filter(h => h.toLowerCase().includes(query))))];
-    resultsDiv.innerHTML = `
-        ${users.length ? `<h4 class="font-bold mb-2 text-pink-500">👥 مستخدمين</h4>${users.map(u => `<div class="conversation-item" onclick="viewProfile('${u.uid}')"><div class="w-10 h-10 rounded-full bg-pink-500 flex items-center justify-center">${u.avatarUrl ? `<img src="${u.avatarUrl}">` : (u.name?.charAt(0) || 'U')}</div><div>@${u.name}</div></div>`).join('')}</div>` : ''}
-        ${hashtags.length ? `<h4 class="font-bold mb-2 mt-4 text-blue-500"># هاشتاقات</h4>${hashtags.map(h => `<div class="conversation-item" onclick="searchHashtag('${h.substring(1)}')"><i class="fas fa-hashtag"></i><div>${h}</div></div>`).join('')}</div>` : ''}
-        ${posts.length ? `<h4 class="font-bold mb-2 mt-4 text-green-500">📝 منشورات</h4>${posts.map(p => `<div class="conversation-item" onclick="window.open('${p.id}')"><div>${p.text?.substring(0, 40)}</div></div>`).join('')}</div>` : ''}
-    `;
-};
-window.searchHashtag = function(tag) { document.getElementById('searchInput').value = '#' + tag; searchAll(); };
-
-// ========== القصص ==========
+// ========== القصص المتطورة ==========
 onValue(ref(db, 'stories'), (s) => {
     const data = s.val();
     const now = Date.now();
@@ -599,20 +779,32 @@ onValue(ref(db, 'stories'), (s) => {
 function renderStories(stories) {
     const container = document.getElementById('storiesList');
     if (!container) return;
-    container.innerHTML = '';
+    const existingAddBtn = container.querySelector('.story-card:first-child');
+    container.innerHTML = `
+        <div class="story-card" onclick="addStory()">
+            <div class="add-story-btn"><i class="fas fa-plus"></i></div>
+            <div class="story-name">أضف قصة</div>
+        </div>
+    `;
     stories.forEach(story => {
         const user = allUsers[story.sender] || { name: 'user', avatarUrl: '' };
         container.innerHTML += `
-            <div class="story-item" onclick="window.open('${story.mediaUrl}','_blank')">
-                <div class="story-ring"><img class="story-avatar" src="${user.avatarUrl || 'https://via.placeholder.com/70'}"></div>
-                <div class="text-xs">${user.name}</div>
+            <div class="story-card" onclick="viewStory('${story.mediaUrl}')">
+                <div class="story-ring"><img class="story-avatar" src="${user.avatarUrl || 'https://via.placeholder.com/80'}"></div>
+                <div class="story-name">${user.name}</div>
             </div>
         `;
     });
 }
 
-window.openStories = function() { document.getElementById('storiesPanel').classList.add('open'); };
-window.closeStories = function() { document.getElementById('storiesPanel').classList.remove('open'); };
+window.openStories = function() {
+    document.getElementById('storiesPanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
+};
+window.closeStories = function() {
+    document.getElementById('storiesPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
 window.addStory = async function() {
     const input = document.createElement('input');
     input.type = 'file';
@@ -626,12 +818,57 @@ window.addStory = async function() {
     };
     input.click();
 };
+window.viewStory = function(url) { window.open(url, '_blank'); };
 
-// ========== التنقل ==========
+// ========== البحث ==========
+window.openSearch = function() {
+    document.getElementById('searchPanel').classList.add('open');
+    document.getElementById('backBtn').style.display = 'flex';
+};
+window.closeSearch = function() {
+    document.getElementById('searchPanel').classList.remove('open');
+    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
+};
+window.searchAll = function() {
+    const query = document.getElementById('searchInput').value.toLowerCase();
+    const resultsDiv = document.getElementById('searchResults');
+    if (!query) { resultsDiv.innerHTML = ''; return; }
+    const users = Object.values(allUsers).filter(u => u.name?.toLowerCase().includes(query));
+    const posts = allPosts.filter(p => p.text?.toLowerCase().includes(query));
+    const hashtags = [...new Set(allPosts.flatMap(p => (p.text?.match(/#\w+/g) || []).filter(h => h.toLowerCase().includes(query))))];
+    resultsDiv.innerHTML = `
+        ${users.length ? `<h4 class="font-bold mb-2 text-pink-500">👥 مستخدمين</h4>${users.map(u => `<div class="search-result" onclick="viewProfile('${u.uid}')"><div class="w-10 h-10 rounded-full bg-pink-500 flex items-center justify-center">${u.avatarUrl ? `<img src="${u.avatarUrl}">` : (u.name?.charAt(0) || 'U')}</div><div>@${u.name}</div></div>`).join('')}</div>` : ''}
+        ${hashtags.length ? `<h4 class="font-bold mb-2 mt-4 text-blue-500"># هاشتاقات</h4>${hashtags.map(h => `<div class="search-result" onclick="searchHashtag('${h.substring(1)}')"><i class="fas fa-hashtag"></i><div>${h}</div></div>`).join('')}</div>` : ''}
+        ${posts.length ? `<h4 class="font-bold mb-2 mt-4 text-green-500">📝 منشورات</h4>${posts.map(p => `<div class="search-result" onclick="window.open('${p.id}')"><div>${p.text?.substring(0, 40)}</div></div>`).join('')}</div>` : ''}
+    `;
+};
+window.searchHashtag = function(tag) { document.getElementById('searchInput').value = '#' + tag; searchAll(); };
+
+// ========== التنقل والرجوع ==========
 window.switchTab = function(tab) {
     document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
     event.target.closest('.nav-item').classList.add('active');
-    if (tab === 'home') { closeCompose(); closeProfile(); closeChat(); closeConversations(); closeNotifications(); closeSearch(); closeStories(); }
+    if (tab === 'home') { 
+        closeCompose(); closeProfile(); closeChat(); closeConversations(); closeNotifications(); closeSearch(); closeStories(); closeComments(); closeFollowers();
+    }
+};
+
+window.goToHome = function() {
+    switchTab('home');
+    document.getElementById('backBtn').style.display = 'none';
+};
+
+window.goBack = function() {
+    if (document.getElementById('commentsPanel').classList.contains('open')) closeComments();
+    else if (document.getElementById('profilePanel').classList.contains('open')) closeProfile();
+    else if (document.getElementById('chatPanel').classList.contains('open')) closeChat();
+    else if (document.getElementById('conversationsPanel').classList.contains('open')) closeConversations();
+    else if (document.getElementById('notificationsPanel').classList.contains('open')) closeNotifications();
+    else if (document.getElementById('searchPanel').classList.contains('open')) closeSearch();
+    else if (document.getElementById('storiesPanel').classList.contains('open')) closeStories();
+    else if (document.getElementById('followersPanel').classList.contains('open')) closeFollowers();
+    else if (document.getElementById('composePanel').classList.contains('open')) closeCompose();
+    else goToHome();
 };
 
 // ========== مراقبة المستخدم ==========
@@ -642,6 +879,7 @@ onAuthStateChanged(auth, async (user) => {
         isAdmin = ADMIN_EMAILS.includes(currentUser.email);
         document.getElementById('authScreen').style.display = 'none';
         document.getElementById('mainApp').style.display = 'block';
+        updateNotificationBadge();
         if (localStorage.getItem('theme') === 'light') document.body.classList.add('light-mode');
     } else {
         document.getElementById('authScreen').style.display = 'flex';
