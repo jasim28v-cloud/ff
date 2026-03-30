@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
-import { getDatabase, ref, push, set, onValue, update, get, child } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
+import { getDatabase, ref, push, set, onValue, update, get, child, remove } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
 
 const firebaseConfig = {
     apiKey: "AIzaSyC8rvv7OihIJbTPz8wLNPPEURP6HeGXPos",
@@ -16,10 +16,10 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getDatabase(app);
 
-export { ref, push, set, onValue, update, get, child };
+export { ref, push, set, onValue, update, get, child, remove };
 
-// Cloudinary Configuration â€“ ظ…ط­ط¯ط«ط©
+// Cloudinary Configuration
 export const CLOUD_NAME = 'dnmpmysk6';
 export const UPLOAD_PRESET = 'do_2gg';
 
-console.log('âœ… InstaPics Ready');
+console.log('✅ Firebase Ready');
