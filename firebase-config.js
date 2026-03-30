@@ -18,8 +18,7 @@ export const db = getDatabase(app);
 
 export { ref, push, set, onValue, update, get, child };
 
-// Cloudinary Configuration – محدثة
 export const CLOUD_NAME = 'dnmpmysk6';
 export const UPLOAD_PRESET = 'do_2gg';
 
-console.log('✅ InstaPics Ready');
+console.log('✅ UltraSocial Ready');
