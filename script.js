@@ -1,1112 +1,1232 @@
-import { auth, db, ref, push, set, onValue, update, get, child, remove, CLOUD_NAME, UPLOAD_PRESET } from './firebase-config.js';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
-
-// ========== GLOBAL VARIABLES ==========
-let currentUser = null;
-let currentUserData = null;
-let allUsers = {};
-let allPosts = [];
-let allStories = [];
-let selectedMediaFile = null;
-let currentChatUserId = null;
-let viewingProfileUserId = null;
-let currentPostForComments = null;
-let mediaRecorder = null;
-let audioChunks = [];
-let bookmarks = {};
-
-const ADMIN_EMAILS = ['jasim28v@gmail.com'];
-let isAdmin = false;
-
-// ========== AUTH ==========
-window.switchAuth = function(type) {
-    const forms = document.querySelectorAll('.auth-form');
-    forms.forEach(f => f.classList.remove('active'));
-    document.getElementById(type === 'login' ? 'loginForm' : 'registerForm').classList.add('active');
-};
-
-window.login = async function() {
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    const msg = document.getElementById('loginMsg');
-    if (!email || !password) { msg.innerText = 'الرجاء ملء جميع الحقول'; return; }
-    msg.innerText = 'جاري تسجيل الدخول...';
-    try {
-        await signInWithEmailAndPassword(auth, email, password);
-        msg.innerText = '';
-    } catch (error) {
-        if (error.code === 'auth/user-not-found') msg.innerText = 'لا يوجد حساب بهذا البريد';
-        else if (error.code === 'auth/wrong-password') msg.innerText = 'كلمة المرور غير صحيحة';
-        else msg.innerText = 'حدث خطأ: ' + error.message;
-    }
-};
-
-window.register = async function() {
-    const name = document.getElementById('regName').value;
-    const email = document.getElementById('regEmail').value;
-    const password = document.getElementById('regPass').value;
-    const confirmPass = document.getElementById('regConfirmPass').value;
-    const msg = document.getElementById('regMsg');
-    if (!name || !email || !password || !confirmPass) { msg.innerText = 'املأ جميع الحقول'; return; }
-    if (password.length < 6) { msg.innerText = 'كلمة المرور 6 أحرف على الأقل'; return; }
-    if (password !== confirmPass) { msg.innerText = 'كلمة المرور غير متطابقة'; return; }
-    msg.innerText = 'جاري إنشاء الحساب...';
-    try {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        await set(ref(db, `users/${userCredential.user.uid}`), {
-            name, email, bio: '', avatarUrl: '', coverUrl: '', followers: {}, following: {}, bookmarks: {}, createdAt: Date.now()
-        });
-        msg.innerText = '';
-    } catch (error) {
-        if (error.code === 'auth/email-already-in-use') msg.innerText = 'البريد الإلكتروني مستخدم بالفعل';
-        else msg.innerText = 'حدث خطأ: ' + error.message;
-    }
-};
-
-window.logout = function() { signOut(auth); location.reload(); };
-
-// ========== DATA LOADING ==========
-async function loadUserData() {
-    const snap = await get(child(ref(db), `users/${currentUser.uid}`));
-    if (snap.exists()) currentUserData = { uid: currentUser.uid, ...snap.val() };
-    if (currentUserData?.bookmarks) bookmarks = currentUserData.bookmarks;
-}
-
-onValue(ref(db, 'users'), (s) => { allUsers = s.val() || {}; });
-
-// ========== MEDIA UPLOAD ==========
-async function uploadMedia(file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_preset', UPLOAD_PRESET);
-    let resourceType = 'image';
-    if (file.type.startsWith('video/')) resourceType = 'video';
-    else if (file.type.startsWith('audio/')) resourceType = 'raw';
-    formData.append('resource_type', resourceType);
-    const url = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/${resourceType}/upload`;
-    const response = await fetch(url, { method: 'POST', body: formData });
-    const data = await response.json();
-    return { url: data.secure_url, type: resourceType === 'raw' ? 'audio' : resourceType };
-}
-
-// ========== OPEN IMAGE MODAL ==========
-window.openImageModal = function(imageUrl) {
-    const modal = document.getElementById('imageModal');
-    const modalImg = document.getElementById('modalImage');
-    modalImg.src = imageUrl;
-    modal.classList.add('open');
-};
-
-window.closeImageModal = function() {
-    const modal = document.getElementById('imageModal');
-    modal.classList.remove('open');
-};
-
-// ========== POSTS ==========
-onValue(ref(db, 'posts'), (s) => {
-    const data = s.val();
-    if (!data) { allPosts = []; renderFeed(); return; }
-    allPosts = [];
-    Object.keys(data).forEach(key => allPosts.push({ id: key, ...data[key] }));
-    allPosts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    renderFeed();
-});
-
-function renderFeed() {
-    const container = document.getElementById('feedContainer');
-    if (!container) return;
-    container.innerHTML = '';
-    if (allPosts.length === 0) {
-        container.innerHTML = '<div class="loading"><div class="spinner"></div><span>لا توجد منشورات بعد</span></div>';
-        return;
-    }
-    allPosts.forEach(post => {
-        const user = allUsers[post.sender] || { name: post.senderName || 'مستخدم', avatarUrl: '' };
-        const isLiked = post.likedBy && post.likedBy[currentUser?.uid];
-        const isRetweeted = post.retweetedBy && post.retweetedBy[currentUser?.uid];
-        const isBookmarked = bookmarks[post.id];
-        const commentsCount = post.comments ? Object.keys(post.comments).length : 0;
-        const retweetCount = post.retweets ? Object.keys(post.retweets).length : 0;
-        
-        let mediaHtml = '';
-        if (post.mediaUrl) {
-            if (post.mediaType === 'image') {
-                mediaHtml = `<div class="tweet-media" onclick="event.stopPropagation(); openImageModal('${post.mediaUrl}')"><img src="${post.mediaUrl}" loading="lazy" class="cursor-pointer"></div>`;
-            } else if (post.mediaType === 'video') {
-                mediaHtml = `<div class="tweet-media" onclick="event.stopPropagation()"><video controls src="${post.mediaUrl}"></video></div>`;
-            } else if (post.mediaType === 'audio') {
-                mediaHtml = `<div class="tweet-media" onclick="event.stopPropagation()"><audio controls src="${post.mediaUrl}"></audio></div>`;
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Sotwe | منصة اجتماعية متكاملة</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://upload-widget.cloudinary.com/global/all.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "firebase/app": "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js",
+                "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js",
+                "firebase/database": "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js"
             }
+        }
+    </script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* Fullscreen - إزالة أي هوامش وجعل الموقع يملأ الشاشة */
+        html {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #000000;
+            color: #ffffff;
+            overflow-y: auto;
+            overflow-x: hidden;
+            height: 100%;
+            width: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* إزالة الخط الأزرق عند التصفح */
+        *:focus {
+            outline: none;
+        }
+
+        a:focus, button:focus, input:focus, textarea:focus {
+            outline: none;
+            box-shadow: none;
+        }
+
+        /* Light Mode */
+        body.light-mode {
+            background: #ffffff;
+            color: #111111;
+        }
+        body.light-mode .tweet-card { background: #ffffff; border-bottom-color: #eef2f5; }
+        body.light-mode .tweet-card:hover { background: #f7f9f9; }
+        body.light-mode .top-bar { background: rgba(255,255,255,0.98); border-bottom-color: #eef2f5; }
+        body.light-mode .bottom-nav { background: rgba(255,255,255,0.98); border-top-color: #eef2f5; }
+        body.light-mode .auth-card { background: #ffffff; border: 1px solid #eef2f5; }
+        body.light-mode .auth-card input { background: #f7f9f9; border-color: #eef2f5; color: #111; }
+        body.light-mode .compose-panel { background: #ffffff; }
+        body.light-mode .profile-panel { background: #ffffff; }
+        body.light-mode .comments-panel { background: #ffffff; }
+        body.light-mode .chat-panel { background: #ffffff; }
+        body.light-mode .search-input { background: #f7f9f9; color: #111; }
+        body.light-mode .compose-input { background: #f7f9f9; color: #111; }
+        body.light-mode .comment-input input { background: #f7f9f9; color: #111; }
+        body.light-mode .edit-profile-modal { background: #ffffff; }
+        body.light-mode .edit-profile-input { background: #f7f9f9; border-color: #eef2f5; color: #111; }
+        body.light-mode .image-modal { background: rgba(255,255,255,0.95); }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #2f3336; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb { background: #1d9bf0; border-radius: 10px; }
+
+        /* Auth Screen */
+        .auth-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            background: #000000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow-y: auto;
         }
         
-        let quoteHtml = '';
-        if (post.quotePostId && post.quotePostData) {
-            const quoteUser = allUsers[post.quotePostData.sender] || { name: 'مستخدم', avatarUrl: '' };
-            quoteHtml = `
-                <div class="mt-3 border border-[#2f3336] rounded-2xl p-3 cursor-pointer" onclick="event.stopPropagation(); openCommentsModal('${post.quotePostId}')">
-                    <div class="flex gap-2 items-center mb-2">
-                        <div class="w-6 h-6 rounded-full bg-[#1d9bf0] overflow-hidden">${quoteUser.avatarUrl ? `<img src="${quoteUser.avatarUrl}">` : quoteUser.name?.charAt(0)}</div>
-                        <span class="font-bold text-sm">${escapeHtml(quoteUser.name)}</span>
-                        <span class="text-xs text-gray-500">@${quoteUser.name?.toLowerCase().replace(/\s/g, '')}</span>
-                    </div>
-                    <div class="text-sm">${escapeHtml(post.quotePostData.text?.substring(0, 100) || '')}</div>
-                </div>
-            `;
+        .auth-card {
+            background: #000000;
+            border-radius: 32px;
+            padding: 48px 40px;
+            width: 90%;
+            max-width: 460px;
+            text-align: center;
+            border: 1px solid #2f3336;
+            margin: 20px auto;
         }
         
-        const div = document.createElement('div');
-        div.className = 'tweet-card';
-        div.onclick = () => openCommentsModal(post.id);
-        div.innerHTML = `
-            <div class="tweet-header">
-                <div class="tweet-avatar" onclick="event.stopPropagation(); viewProfile('${post.sender}')">${user.avatarUrl ? `<img src="${user.avatarUrl}">` : (user.name?.charAt(0) || '👤')}</div>
-                <div style="flex:1">
-                    <div><span class="tweet-name" onclick="event.stopPropagation(); viewProfile('${post.sender}')">${escapeHtml(user.name)}</span><span class="tweet-username mx-1">@${user.name?.toLowerCase().replace(/\s/g, '')}</span><span class="tweet-time">· ${new Date(post.timestamp).toLocaleString()}</span></div>
-                    <div class="tweet-content">${escapeHtml(post.text || '')}</div>
-                    ${mediaHtml}
-                    ${quoteHtml}
-                </div>
-            </div>
-            <div class="tweet-actions" onclick="event.stopPropagation()">
-                <button class="tweet-action" onclick="openCommentsModal('${post.id}')"><i class="far fa-comment"></i> <span>${commentsCount}</span></button>
-                <button class="tweet-action ${isRetweeted ? 'active' : ''}" onclick="toggleRetweet('${post.id}', this)"><i class="fas fa-retweet"></i> <span>${retweetCount}</span></button>
-                <button class="tweet-action ${isLiked ? 'active' : ''}" onclick="toggleLike('${post.id}', this)"><i class="fas fa-heart"></i> <span>${post.likes || 0}</span></button>
-                <button class="tweet-action ${isBookmarked ? 'active' : ''}" onclick="toggleBookmark('${post.id}', this)"><i class="fas fa-bookmark"></i></button>
-                <button class="tweet-action" onclick="openQuoteModal('${post.id}')"><i class="fas fa-quote-right"></i></button>
-            </div>
-        `;
-        container.appendChild(div);
-    });
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// ========== POST ACTIONS ==========
-window.openCompose = function() { 
-    document.getElementById('composePanel').classList.add('open'); 
-    document.getElementById('backBtn').style.display = 'flex';
-    resetCompose();
-};
-window.closeCompose = function() { 
-    document.getElementById('composePanel').classList.remove('open'); 
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-function resetCompose() {
-    document.getElementById('postText').value = '';
-    document.getElementById('mediaPreview').innerHTML = '';
-    document.getElementById('mediaPreview').style.display = 'none';
-    selectedMediaFile = null;
-    document.getElementById('postImage').value = '';
-    document.getElementById('postVideo').value = '';
-    document.getElementById('postStatus').innerHTML = '';
-}
-
-window.previewMedia = function(input, type) {
-    const file = input.files[0];
-    if (!file) return;
-    selectedMediaFile = file;
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        const mediaPreview = document.getElementById('mediaPreview');
-        if (type === 'image') mediaPreview.innerHTML = `<img src="${e.target.result}" class="max-h-64 rounded-2xl">`;
-        else if (type === 'video') mediaPreview.innerHTML = `<video controls class="max-h-64 rounded-2xl"><source src="${e.target.result}"></video>`;
-        mediaPreview.style.display = 'block';
-    };
-    reader.readAsDataURL(file);
-};
-
-window.startAudioRecording = async function() {
-    const btn = document.getElementById('audioRecordBtn');
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
-        btn.innerHTML = '<i class="fas fa-microphone"></i>';
-        return;
-    }
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
-        mediaRecorder.ondataavailable = (event) => { audioChunks.push(event.data); };
-        mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/mp3' });
-            const audioFile = new File([audioBlob], 'recording.mp3', { type: 'audio/mp3' });
-            selectedMediaFile = audioFile;
-            const audioUrl = URL.createObjectURL(audioBlob);
-            document.getElementById('mediaPreview').innerHTML = `<audio controls src="${audioUrl}"></audio>`;
-            document.getElementById('mediaPreview').style.display = 'block';
-            stream.getTracks().forEach(track => track.stop());
-        };
-        mediaRecorder.start();
-        btn.innerHTML = '<i class="fas fa-stop-circle text-red-500"></i>';
-    } catch (err) { showToast('لا يمكن الوصول إلى الميكروفون'); }
-};
-
-window.createPost = async function() {
-    const text = document.getElementById('postText')?.value || '';
-    if (!text.trim() && !selectedMediaFile) { showToast('اكتب شيئاً أو اختر وسائط'); return; }
-    document.getElementById('postStatus').innerHTML = '📤 جاري النشر...';
-    let mediaUrl = '', mediaType = 'none';
-    if (selectedMediaFile) {
-        try {
-            const result = await uploadMedia(selectedMediaFile);
-            mediaUrl = result.url;
-            mediaType = result.type;
-        } catch (error) { document.getElementById('postStatus').innerHTML = '❌ فشل رفع الوسائط'; return; }
-    }
-    try {
-        await push(ref(db, 'posts'), {
-            text, mediaUrl, mediaType,
-            sender: currentUser.uid,
-            senderName: currentUserData?.name,
-            likes: 0, likedBy: {}, retweets: {}, retweetedBy: {}, comments: {},
-            timestamp: Date.now()
-        });
-        document.getElementById('postStatus').innerHTML = '✅ تم النشر!';
-        setTimeout(() => closeCompose(), 1500);
-    } catch (error) { document.getElementById('postStatus').innerHTML = '❌ فشل النشر'; }
-};
-
-window.toggleLike = async function(postId, btn) {
-    if (!currentUser) return;
-    const postRef = ref(db, `posts/${postId}`);
-    const snap = await get(postRef);
-    const post = snap.val();
-    if (!post) return;
-    let likes = post.likes || 0;
-    let likedBy = post.likedBy || {};
-    if (likedBy[currentUser.uid]) { 
-        likes--; 
-        delete likedBy[currentUser.uid]; 
-        showToast('تم إلغاء الإعجاب');
-    } else { 
-        likes++; 
-        likedBy[currentUser.uid] = true; 
-        addNotification(post.sender, 'like', postId);
-        showToast('❤️ أعجبتك');
-        if (btn) {
-            const icon = btn.querySelector('i');
-            if (icon) icon.classList.add('heart-animation');
-            setTimeout(() => icon?.classList.remove('heart-animation'), 300);
+        .auth-card h1 {
+            font-size: 56px;
+            font-weight: 900;
+            margin-bottom: 32px;
+            background: linear-gradient(135deg, #1d9bf0, #f91880);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
-    }
-    await update(postRef, { likes, likedBy });
-    if (btn) {
-        btn.classList.toggle('active');
-        const span = btn.querySelector('span');
-        if (span) span.innerText = likes;
-    }
-};
+        
+        .auth-card input {
+            width: 100%;
+            padding: 16px 20px;
+            margin: 10px 0;
+            border-radius: 12px;
+            background: #1a1a1a;
+            border: 1px solid #2f3336;
+            color: white;
+            font-size: 16px;
+            transition: 0.2s;
+        }
+        .auth-card input:focus {
+            border-color: #1d9bf0;
+        }
+        
+        .auth-card button {
+            width: 100%;
+            padding: 14px;
+            margin-top: 16px;
+            background: #1d9bf0;
+            border: none;
+            border-radius: 40px;
+            color: white;
+            font-weight: 700;
+            font-size: 16px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .auth-card button:hover { background: #1a8cd8; }
+        
+        .auth-divider {
+            display: flex;
+            align-items: center;
+            margin: 24px 0;
+            color: #71767b;
+            font-size: 14px;
+        }
+        .auth-divider::before,
+        .auth-divider::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: #2f3336;
+        }
+        .auth-divider::before { margin-left: 16px; }
+        .auth-divider::after { margin-right: 16px; }
+        
+        .forgot-password {
+            display: block;
+            text-align: left;
+            color: #1d9bf0;
+            font-size: 13px;
+            margin-top: 8px;
+            text-decoration: none;
+        }
+        .forgot-password:hover { text-decoration: underline; }
+        
+        .auth-form { display: none; }
+        .auth-form.active { display: block; }
+        .error-msg { color: #f91880; font-size: 13px; margin-top: 8px; text-align: left; }
+        .auth-link { margin-top: 32px; color: #71767b; font-size: 14px; }
+        .auth-link a { color: #1d9bf0; text-decoration: none; font-weight: 600; }
 
-window.toggleRetweet = async function(postId, btn) {
-    if (!currentUser) return;
-    const postRef = ref(db, `posts/${postId}`);
-    const snap = await get(postRef);
-    const post = snap.val();
-    if (!post) return;
-    let retweets = post.retweets || {};
-    let retweetedBy = post.retweetedBy || {};
-    let retweetCount = Object.keys(retweets).length;
-    
-    if (retweetedBy[currentUser.uid]) {
-        const keyToDelete = Object.keys(retweets).find(k => retweets[k].userId === currentUser.uid);
-        if (keyToDelete) delete retweets[keyToDelete];
-        delete retweetedBy[currentUser.uid];
-        retweetCount--;
-        showToast('تم إلغاء إعادة التغريد');
-    } else {
-        const newRetweetId = Date.now().toString();
-        retweets[newRetweetId] = { userId: currentUser.uid, timestamp: Date.now() };
-        retweetedBy[currentUser.uid] = true;
-        retweetCount++;
-        addNotification(post.sender, 'retweet', postId);
-        showToast('🔄 تم إعادة التغريد');
-    }
-    await update(postRef, { retweets, retweetedBy });
-    if (btn) {
-        btn.classList.toggle('active');
-        const span = btn.querySelector('span');
-        if (span) span.innerText = retweetCount;
-    }
-};
+        /* Main App - Fullscreen */
+        #mainApp { 
+            display: none; 
+            min-height: 100vh; 
+            background: #000000; 
+            overflow-y: auto; 
+            overflow-x: hidden;
+            height: 100%;
+            width: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            -webkit-overflow-scrolling: touch;
+        }
 
-window.toggleBookmark = async function(postId, btn) {
-    if (!currentUser) return;
-    const userRef = ref(db, `users/${currentUser.uid}/bookmarks/${postId}`);
-    const snap = await get(userRef);
-    if (snap.exists()) {
-        await set(userRef, null);
-        delete bookmarks[postId];
-        showToast('تمت إزالة من الإشارات المرجعية');
-    } else {
-        await set(userRef, true);
-        bookmarks[postId] = true;
-        showToast('📌 تمت إضافة إلى الإشارات المرجعية');
-    }
-    if (btn) btn.classList.toggle('active');
-};
+        /* Top Bar - Fixed */
+        .top-bar {
+            position: sticky;
+            top: 0;
+            background: rgba(0,0,0,0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid #2f3336;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #1d9bf0, #f91880);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            cursor: pointer;
+        }
+        .top-icons { display: flex; gap: 24px; align-items: center; }
+        .top-icon { font-size: 22px; color: #e7e9ea; cursor: pointer; position: relative; transition: 0.2s; }
+        .top-icon:hover { color: #1d9bf0; }
+        .notification-badge {
+            position: absolute;
+            top: -8px;
+            right: -12px;
+            background: #f91880;
+            color: white;
+            font-size: 10px;
+            font-weight: bold;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .back-btn {
+            background: none;
+            border: none;
+            color: #1d9bf0;
+            font-size: 14px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            gap: 6px;
+        }
 
-window.openQuoteModal = function(postId) {
-    const quoteText = prompt('أضف تعليقك على هذا المنشور:');
-    if (quoteText) createQuotePost(postId, quoteText);
-};
+        /* Feed */
+        .feed-container { padding: 0 0 80px; }
+        .tweet-card {
+            background: #000000;
+            border-bottom: 1px solid #2f3336;
+            padding: 16px 20px;
+            transition: background 0.2s;
+            cursor: pointer;
+        }
+        .tweet-card:hover { background: #080808; }
+        .tweet-header { display: flex; gap: 12px; margin-bottom: 8px; }
+        .tweet-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #1d9bf0, #f91880);
+            overflow: hidden;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .tweet-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .tweet-name { font-weight: 800; cursor: pointer; font-size: 15px; }
+        .tweet-username { font-size: 13px; color: #71767b; }
+        .tweet-time { font-size: 13px; color: #71767b; }
+        .tweet-content { margin: 8px 0 12px; font-size: 15px; line-height: 1.4; white-space: pre-wrap; }
+        
+        .tweet-media {
+            margin: 12px 0;
+            border-radius: 20px;
+            overflow: hidden;
+            background: #1a1a1a;
+            cursor: pointer;
+        }
+        .tweet-media img {
+            width: 100%;
+            max-height: 500px;
+            object-fit: cover;
+            transition: transform 0.3s ease;
+        }
+        .tweet-media img:hover { transform: scale(1.02); }
+        .tweet-media video { width: 100%; max-height: 500px; border-radius: 20px; }
+        
+        /* Fullscreen Image Modal */
+        .image-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.98);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: 0.3s;
+            cursor: pointer;
+        }
+        .image-modal.open {
+            opacity: 1;
+            visibility: visible;
+        }
+        .image-modal img {
+            max-width: 95%;
+            max-height: 95%;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        .close-modal {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            cursor: pointer;
+            z-index: 2001;
+        }
+        
+        .tweet-actions {
+            display: flex;
+            justify-content: space-between;
+            max-width: 425px;
+            margin-top: 12px;
+        }
+        .tweet-action {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: none;
+            border: none;
+            color: #71767b;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 8px;
+            border-radius: 40px;
+            transition: 0.2s;
+        }
+        .tweet-action i { font-size: 18px; }
+        .tweet-action:hover { color: #1d9bf0; background: rgba(29,155,240,0.1); }
+        .tweet-action.active { color: #f91880; }
 
-async function createQuotePost(originalPostId, quoteText) {
-    const originalPost = allPosts.find(p => p.id === originalPostId);
-    if (!originalPost) return;
-    try {
-        await push(ref(db, 'posts'), {
-            text: quoteText,
-            mediaUrl: '', mediaType: 'none',
-            sender: currentUser.uid,
-            senderName: currentUserData?.name,
-            quotePostId: originalPostId,
-            quotePostData: {
-                text: originalPost.text,
-                sender: originalPost.sender,
-                senderName: originalPost.senderName,
-                mediaUrl: originalPost.mediaUrl,
-                mediaType: originalPost.mediaType
-            },
-            likes: 0, likedBy: {}, retweets: {}, retweetedBy: {}, comments: {},
-            timestamp: Date.now()
-        });
-        addNotification(originalPost.sender, 'quote', originalPostId);
-        showToast('✅ تم نشر الاقتباس');
-    } catch (error) { showToast('❌ فشل النشر'); }
-}
+        /* Compose Panel */
+        .compose-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 200;
+            transform: translateY(100%);
+            transition: 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            overflow-y: auto;
+        }
+        .compose-panel.open { transform: translateY(0); }
+        .compose-area { padding: 20px; max-width: 600px; margin: 0 auto; }
+        .compose-input {
+            width: 100%;
+            min-height: 150px;
+            background: #000000;
+            border: none;
+            padding: 16px;
+            color: white;
+            font-size: 20px;
+            resize: none;
+            outline: none;
+        }
+        .media-preview { margin: 16px 0; display: none; }
+        .media-preview img { max-height: 300px; border-radius: 20px; width: 100%; object-fit: cover; }
+        .compose-tools {
+            display: flex;
+            gap: 16px;
+            padding: 12px 0;
+            border-top: 1px solid #2f3336;
+            border-bottom: 1px solid #2f3336;
+        }
+        .compose-tool {
+            background: none;
+            border: none;
+            color: #1d9bf0;
+            font-size: 20px;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .compose-tool:hover { background: rgba(29,155,240,0.1); }
 
-// ========== COMMENTS ==========
-window.openCommentsModal = async function(postId) {
-    currentPostForComments = postId;
-    const post = allPosts.find(p => p.id === postId);
-    if (!post) return;
-    const container = document.getElementById('commentsList');
-    const comments = post.comments || {};
-    if (!container) return;
-    container.innerHTML = '';
-    const sortedComments = Object.entries(comments).sort((a,b) => b[1].timestamp - a[1].timestamp);
-    for (const [commentKey, comment] of sortedComments) {
-        const user = allUsers[comment.userId] || { name: comment.username || 'مستخدم', avatarUrl: '' };
-        const replies = comment.replies || {};
-        const commentDiv = document.createElement('div');
-        commentDiv.className = 'comment-item';
-        commentDiv.innerHTML = `
-            <div class="comment-header">
-                <div class="comment-avatar" onclick="viewProfile('${comment.userId}')">${user.avatarUrl ? `<img src="${user.avatarUrl}">` : (user.name?.charAt(0) || '👤')}</div>
-                <div style="flex:1">
-                    <div><span class="comment-user" onclick="viewProfile('${comment.userId}')">${escapeHtml(user.name)}</span><span class="comment-time mx-2">· ${new Date(comment.timestamp).toLocaleString()}</span></div>
-                    <div class="comment-text">${escapeHtml(comment.text)}</div>
-                </div>
+        /* Profile Panel */
+        .profile-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 300;
+            transform: translateX(100%);
+            transition: 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            overflow-y: auto;
+        }
+        .profile-panel.open { transform: translateX(0); }
+        .profile-cover {
+            width: 100%;
+            height: 200px;
+            background: linear-gradient(135deg, #1d9bf0, #f91880);
+            cursor: pointer;
+            position: relative;
+        }
+        .profile-cover-edit {
+            position: absolute;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10;
+        }
+        .profile-info { padding: 0 20px 20px; position: relative; }
+        .profile-avatar {
+            width: 112px;
+            height: 112px;
+            border-radius: 50%;
+            background: #111;
+            border: 4px solid #000000;
+            margin-top: -56px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            cursor: pointer;
+            position: relative;
+        }
+        .profile-avatar-edit {
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10;
+        }
+        .profile-name { font-size: 20px; font-weight: 800; margin-top: 12px; }
+        .profile-bio { color: #71767b; font-size: 14px; margin: 8px 0; white-space: pre-wrap; }
+        .profile-stats {
+            display: flex;
+            gap: 24px;
+            margin: 16px 0;
+            padding: 12px 0;
+            border-top: 1px solid #2f3336;
+            border-bottom: 1px solid #2f3336;
+        }
+        .profile-stats div { text-align: center; cursor: pointer; }
+        .profile-stats .stat-number { font-size: 18px; font-weight: 800; }
+        .profile-stats .stat-label { font-size: 13px; color: #71767b; }
+        .profile-buttons { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+        .profile-btn {
+            padding: 8px 24px;
+            border-radius: 40px;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            font-size: 14px;
+            transition: 0.2s;
+        }
+        .profile-btn-primary { background: #1d9bf0; color: white; }
+        .profile-btn-primary:hover { background: #1a8cd8; }
+        .profile-btn-secondary { background: #2f3336; color: white; }
+        .profile-btn-secondary:hover { background: #3a3f42; }
+        .profile-tabs { display: flex; border-bottom: 1px solid #2f3336; }
+        .profile-tab {
+            flex: 1;
+            text-align: center;
+            padding: 16px;
+            cursor: pointer;
+            color: #71767b;
+            font-weight: 600;
+            transition: 0.2s;
+        }
+        .profile-tab.active { color: #1d9bf0; border-bottom: 2px solid #1d9bf0; }
+        .profile-posts-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2px;
+            margin-top: 4px;
+        }
+        .profile-post {
+            aspect-ratio: 1;
+            background: #1a1a2a;
+            overflow: hidden;
+            cursor: pointer;
+            position: relative;
+        }
+        .profile-post img, .profile-post video { width: 100%; height: 100%; object-fit: cover; }
+
+        /* Edit Profile Modal */
+        .edit-profile-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: 0.3s;
+        }
+        .edit-profile-modal.open {
+            opacity: 1;
+            visibility: visible;
+        }
+        .edit-profile-content {
+            background: #000000;
+            border-radius: 28px;
+            padding: 32px;
+            width: 90%;
+            max-width: 500px;
+            border: 1px solid #2f3336;
+        }
+        .edit-profile-title {
+            font-size: 24px;
+            font-weight: 800;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .edit-profile-input {
+            width: 100%;
+            padding: 14px 16px;
+            margin: 12px 0;
+            background: #1a1a1a;
+            border: 1px solid #2f3336;
+            border-radius: 16px;
+            color: white;
+            font-size: 16px;
+            outline: none;
+        }
+        .edit-profile-input:focus {
+            border-color: #1d9bf0;
+        }
+        .edit-profile-textarea {
+            width: 100%;
+            padding: 14px 16px;
+            margin: 12px 0;
+            background: #1a1a1a;
+            border: 1px solid #2f3336;
+            border-radius: 16px;
+            color: white;
+            font-size: 16px;
+            outline: none;
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+        .edit-profile-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        .edit-profile-buttons button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 40px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+        }
+        .edit-profile-save {
+            background: #1d9bf0;
+            color: white;
+        }
+        .edit-profile-cancel {
+            background: #2f3336;
+            color: white;
+        }
+
+        /* Upload Avatar/Cover Buttons */
+        .upload-section {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            margin-bottom: 16px;
+        }
+        .upload-btn {
+            flex: 1;
+            background: #2f3336;
+            color: white;
+            padding: 12px;
+            border-radius: 40px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            transition: 0.2s;
+        }
+        .upload-btn:hover {
+            background: #3a3f42;
+        }
+
+        /* Comments Panel */
+        .comments-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 400;
+            transform: translateX(100%);
+            transition: 0.3s;
+            display: flex;
+            flex-direction: column;
+        }
+        .comments-panel.open { transform: translateX(0); }
+        .comments-header { padding: 16px; border-bottom: 1px solid #2f3336; display: flex; justify-content: space-between; align-items: center; }
+        .comments-list { flex: 1; overflow-y: auto; padding: 16px; }
+        .comment-item { margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #2f3336; }
+        .comment-header { display: flex; gap: 12px; margin-bottom: 8px; }
+        .comment-avatar { width: 40px; height: 40px; border-radius: 50%; background: #1d9bf0; overflow: hidden; cursor: pointer; flex-shrink: 0; }
+        .comment-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .comment-user { font-weight: 700; font-size: 14px; cursor: pointer; }
+        .comment-time { font-size: 11px; color: #71767b; }
+        .comment-text { font-size: 14px; margin: 8px 0; line-height: 1.4; }
+        .reply-list { margin-top: 12px; margin-right: 48px; border-right: 2px solid #1d9bf0; padding-right: 12px; }
+        .reply-item { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #2f3336; }
+        .reply-header { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+        .reply-avatar { width: 28px; height: 28px; border-radius: 50%; background: #1d9bf0; overflow: hidden; }
+        .reply-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .reply-user { font-weight: 600; font-size: 12px; cursor: pointer; }
+        .reply-text { font-size: 13px; margin: 4px 0; }
+        .comment-input-area { padding: 16px; border-top: 1px solid #2f3336; background: #000000; }
+        .comment-input { display: flex; gap: 12px; align-items: center; }
+        .comment-input input { flex: 1; padding: 12px 16px; background: #1a1a1a; border: 1px solid #2f3336; border-radius: 40px; color: white; outline: none; font-size: 14px; }
+
+        /* Chat Panel */
+        .chat-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 400;
+            transform: translateX(100%);
+            transition: 0.3s;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-panel.open { transform: translateX(0); }
+        .chat-header { padding: 16px; border-bottom: 1px solid #2f3336; display: flex; justify-content: space-between; align-items: center; }
+        .chat-user-info { display: flex; align-items: center; gap: 12px; }
+        .chat-user-avatar { width: 48px; height: 48px; border-radius: 50%; background: #1d9bf0; overflow: hidden; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+        .chat-message { display: flex; gap: 8px; max-width: 85%; }
+        .chat-message.sent { align-self: flex-end; flex-direction: row-reverse; }
+        .message-bubble { background: #1a1a2a; padding: 10px 14px; border-radius: 20px; }
+        .message-bubble.sent { background: #1d9bf0; color: white; }
+        .message-image { max-width: 200px; border-radius: 16px; cursor: pointer; }
+        .message-audio audio { height: 36px; }
+        .chat-input-area { display: flex; gap: 12px; padding: 12px; border-top: 1px solid #2f3336; background: #000000; }
+        .chat-input-area input { flex: 1; padding: 12px 16px; border: 1px solid #2f3336; border-radius: 40px; background: #1a1a1a; color: white; outline: none; }
+        .chat-input-area button { background: none; border: none; color: #1d9bf0; font-size: 20px; cursor: pointer; padding: 8px; border-radius: 50%; }
+
+        /* Bottom Nav */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.95);
+            backdrop-filter: blur(12px);
+            border-top: 1px solid #2f3336;
+            display: flex;
+            justify-content: space-around;
+            padding: 8px 0 16px;
+            z-index: 100;
+        }
+        .nav-item {
+            background: none;
+            border: none;
+            font-size: 26px;
+            color: #71767b;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 40px;
+            transition: 0.2s;
+        }
+        .nav-item.active { color: #1d9bf0; }
+        .nav-item:hover { background: rgba(29,155,240,0.1); color: #1d9bf0; }
+
+        /* Search Panel */
+        .search-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 350;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .search-panel.open { transform: translateX(0); }
+        .search-input {
+            width: calc(100% - 32px);
+            margin: 16px;
+            padding: 12px 20px;
+            background: #1a1a1a;
+            border: 1px solid #2f3336;
+            border-radius: 40px;
+            color: white;
+            font-size: 16px;
+            outline: none;
+        }
+        .search-result {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid #2f3336;
+            cursor: pointer;
+        }
+        .search-result:hover { background: #080808; }
+
+        /* Notifications Panel */
+        .notifications-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 350;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .notifications-panel.open { transform: translateX(0); }
+        .notification-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            border-bottom: 1px solid #2f3336;
+            cursor: pointer;
+        }
+        .notification-item:hover { background: #080808; }
+
+        /* Followers Panel */
+        .followers-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 450;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .followers-panel.open { transform: translateX(0); }
+        .follower-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid #2f3336;
+            cursor: pointer;
+        }
+        .follower-item:hover { background: #080808; }
+
+        /* Stories Panel */
+        .stories-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 350;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .stories-panel.open { transform: translateX(0); }
+        .stories-row {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            overflow-x: auto;
+        }
+        .story-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            min-width: 80px;
+        }
+        .story-ring {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #1d9bf0, #f91880);
+            padding: 3px;
+        }
+        .story-avatar {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+            background: #111;
+        }
+        .add-story-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: #1a1a2a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            color: #1d9bf0;
+            cursor: pointer;
+            border: 2px dashed #1d9bf0;
+        }
+
+        /* Admin Panel - Modern */
+        .admin-panel {
+            position: fixed;
+            inset: 0;
+            background: #000000;
+            z-index: 500;
+            transform: translateX(100%);
+            transition: 0.3s;
+            overflow-y: auto;
+        }
+        .admin-panel.open { transform: translateX(0); }
+        .admin-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            padding: 20px;
+        }
+        .admin-stat {
+            background: linear-gradient(135deg, #1a1a2a, #0f0f1a);
+            padding: 24px;
+            border-radius: 24px;
+            text-align: center;
+            border: 1px solid rgba(29,155,240,0.2);
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .admin-stat:hover {
+            transform: translateY(-4px);
+            border-color: #1d9bf0;
+        }
+        .admin-stat-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            color: #1d9bf0;
+        }
+        .admin-stat-number {
+            font-size: 32px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .admin-stat-label {
+            font-size: 14px;
+            color: #71767b;
+        }
+        .admin-section {
+            padding: 20px;
+            border-top: 1px solid #2f3336;
+        }
+        .admin-section-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .admin-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-bottom: 1px solid #2f3336;
+            transition: background 0.2s;
+        }
+        .admin-item:hover {
+            background: #080808;
+        }
+        .admin-item-info {
+            flex: 1;
+        }
+        .admin-item-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .admin-item-email {
+            font-size: 12px;
+            color: #71767b;
+        }
+        .admin-item-text {
+            font-size: 14px;
+            color: #71767b;
+        }
+        .admin-delete-btn {
+            background: #f91880;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: 0.2s;
+        }
+        .admin-delete-btn:hover {
+            background: #e01070;
+            transform: scale(1.02);
+        }
+
+        /* Loading */
+        .loading { text-align: center; padding: 80px 20px; color: #71767b; }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(29,155,240,0.2);
+            border-top-color: #1d9bf0;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Toast */
+        #customToast {
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1d9bf0;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 40px;
+            z-index: 1100;
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0;
+            transition: 0.3s;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        
+        /* Heart Animation */
+        @keyframes heartBeat {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.3); color: #f91880; }
+            100% { transform: scale(1); }
+        }
+        .heart-animation {
+            animation: heartBeat 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="authScreen" class="auth-screen">
+    <div class="auth-card">
+        <h1>Sotwe</h1>
+        <div id="loginForm" class="auth-form active">
+            <div style="text-align: right; margin-bottom: 24px;">
+                <h2 style="font-size: 24px; font-weight: 700;">تسجيل الدخول</h2>
+                <p style="color: #71767b; margin-top: 8px;">قم بالوصول إلى حسابك في Sotwe</p>
             </div>
-            <div class="reply-list" id="replies-${commentKey}"></div>
-            <div><button class="text-[#1d9bf0] text-sm mt-2" onclick="showReplyInput('${commentKey}')"><i class="fas fa-reply"></i> رد</button></div>
-            <div id="reply-input-${commentKey}" class="mt-2"></div>
-        `;
-        const repliesContainer = commentDiv.querySelector(`#replies-${commentKey}`);
-        if (repliesContainer && replies) {
-            const sortedReplies = Object.entries(replies).sort((a,b) => a[1].timestamp - b[1].timestamp);
-            for (const [replyKey, reply] of sortedReplies) {
-                const replyUser = allUsers[reply.userId] || { name: reply.username || 'مستخدم', avatarUrl: '' };
-                repliesContainer.innerHTML += `
-                    <div class="reply-item">
-                        <div class="reply-header">
-                            <div class="reply-avatar" onclick="viewProfile('${reply.userId}')">${replyUser.avatarUrl ? `<img src="${replyUser.avatarUrl}">` : (replyUser.name?.charAt(0) || '👤')}</div>
-                            <div class="reply-user" onclick="viewProfile('${reply.userId}')">${escapeHtml(replyUser.name)}</div>
-                            <div class="comment-time">${new Date(reply.timestamp).toLocaleTimeString()}</div>
-                        </div>
-                        <div class="reply-text">${escapeHtml(reply.text)}</div>
-                    </div>
-                `;
+            <input type="email" id="loginEmail" placeholder="البريد الإلكتروني">
+            <input type="password" id="loginPassword" placeholder="كلمة المرور">
+            <a href="#" class="forgot-password" onclick="alert('سيتم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك الإلكتروني')">نسيت كلمة المرور؟</a>
+            <button onclick="login()">تسجيل الدخول</button>
+            <div id="loginMsg" class="error-msg"></div>
+            <div class="auth-link">
+                ليس لديك حساب؟ <a href="#" onclick="switchAuth('register')">إنشاء حساب</a>
+            </div>
+        </div>
+        <div id="registerForm" class="auth-form">
+            <div style="text-align: right; margin-bottom: 24px;">
+                <h2 style="font-size: 24px; font-weight: 700;">إنشاء حساب</h2>
+                <p style="color: #71767b; margin-top: 8px;">قم بإنشاء حسابك في Sotwe</p>
+            </div>
+            <input type="text" id="regName" placeholder="اسم المستخدم">
+            <input type="email" id="regEmail" placeholder="البريد الإلكتروني">
+            <input type="password" id="regPass" placeholder="كلمة المرور">
+            <input type="password" id="regConfirmPass" placeholder="تأكيد كلمة المرور">
+            <button onclick="register()">إنشاء حساب</button>
+            <div id="regMsg" class="error-msg"></div>
+            <div class="auth-link">
+                لديك حساب بالفعل؟ <a href="#" onclick="switchAuth('login')">تسجيل الدخول</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main App -->
+<div id="mainApp">
+    <div class="top-bar">
+        <div class="logo" onclick="goToHome()">Sotwe</div>
+        <div class="top-icons">
+            <button class="back-btn" id="backBtn" onclick="goBack()"><i class="fas fa-arrow-right"></i> رجوع</button>
+            <i class="fas fa-search top-icon" onclick="openSearch()"></i>
+            <div class="top-icon" onclick="openNotifications()" id="notifIcon" style="position: relative;">
+                <i class="far fa-bell"></i>
+            </div>
+            <i class="far fa-envelope top-icon" onclick="openConversations()"></i>
+            <i class="fas fa-sun top-icon" onclick="toggleTheme()"></i>
+        </div>
+    </div>
+
+    <div id="feedContainer" class="feed-container">
+        <div class="loading"><div class="spinner"></div><span>جاري التحميل...</span></div>
+    </div>
+
+    <div class="bottom-nav">
+        <button class="nav-item active" onclick="switchTab('home')"><i class="fas fa-home"></i></button>
+        <button class="nav-item" onclick="openSearch()"><i class="fas fa-search"></i></button>
+        <button class="nav-item" onclick="openCompose()"><i class="fas fa-feather-alt"></i></button>
+        <button class="nav-item" onclick="openNotifications()"><i class="far fa-bell"></i></button>
+        <button class="nav-item" onclick="openMyProfile()"><i class="fas fa-user"></i></button>
+    </div>
+
+    <!-- Compose Panel -->
+    <div id="composePanel" class="compose-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]">
+            <h3 class="font-bold text-xl">إنشاء منشور</h3>
+            <button onclick="closeCompose()" class="text-2xl text-gray-500 hover:text-white">&times;</button>
+        </div>
+        <div class="compose-area">
+            <textarea id="postText" class="compose-input" placeholder="ماذا يحدث؟"></textarea>
+            <div id="mediaPreview" class="media-preview"></div>
+            <div class="compose-tools">
+                <button class="compose-tool" onclick="document.getElementById('postImage').click()"><i class="fas fa-image"></i></button>
+                <button class="compose-tool" onclick="document.getElementById('postVideo').click()"><i class="fas fa-video"></i></button>
+                <button class="compose-tool" id="audioRecordBtn" onclick="startAudioRecording()"><i class="fas fa-microphone"></i></button>
+            </div>
+            <input type="file" id="postImage" accept="image/*" style="display:none" onchange="previewMedia(this, 'image')">
+            <input type="file" id="postVideo" accept="video/*" style="display:none" onchange="previewMedia(this, 'video')">
+            <div id="postStatus" class="text-sm mt-2 text-center text-[#1d9bf0]"></div>
+            <button onclick="createPost()" class="w-full bg-[#1d9bf0] text-white py-3 rounded-full mt-4 font-bold text-lg hover:bg-[#1a8cd8] transition">نشر</button>
+        </div>
+    </div>
+
+    <!-- Comments Panel -->
+    <div id="commentsPanel" class="comments-panel">
+        <div class="comments-header"><h3 class="font-bold">التعليقات</h3><button onclick="closeComments()" class="text-2xl">&times;</button></div>
+        <div id="commentsList" class="comments-list"></div>
+        <div class="comment-input-area">
+            <div class="comment-input">
+                <input type="text" id="commentInput" placeholder="أضف تعليقاً...">
+                <button onclick="addComment()" class="bg-[#1d9bf0] text-white px-5 py-2 rounded-full font-bold">نشر</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Profile Panel -->
+    <div id="profilePanel" class="profile-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 class="font-bold text-xl">الملف الشخصي</h3><button onclick="closeProfile()" class="text-2xl">&times;</button></div>
+        <div id="profileCover" class="profile-cover">
+            <div class="profile-cover-edit" onclick="changeCover()"><i class="fas fa-camera"></i></div>
+        </div>
+        <div class="profile-info">
+            <div class="profile-avatar" id="profileAvatar">
+                <div class="profile-avatar-edit" onclick="changeAvatar()"><i class="fas fa-camera fa-xs"></i></div>
+            </div>
+            <div class="profile-name" id="profileName"></div>
+            <div class="profile-bio" id="profileBio"></div>
+            <div class="upload-section">
+                <div class="upload-btn" onclick="changeAvatar()"><i class="fas fa-user-circle"></i> تغيير الصورة الشخصية</div>
+                <div class="upload-btn" onclick="changeCover()"><i class="fas fa-image"></i> تغيير صورة الغلاف</div>
+            </div>
+            <div class="profile-stats">
+                <div onclick="openFollowersList('followers')"><div class="stat-number" id="profileFollowersCount">0</div><div class="stat-label">متابع</div></div>
+                <div onclick="openFollowersList('following')"><div class="stat-number" id="profileFollowingCount">0</div><div class="stat-label">يتابع</div></div>
+                <div><div class="stat-number" id="profilePostsCount">0</div><div class="stat-label">منشورات</div></div>
+            </div>
+            <div id="profileButtons" class="profile-buttons"></div>
+        </div>
+        <div class="profile-tabs"><button class="profile-tab active" data-tab="posts">منشورات</button><button class="profile-tab" data-tab="media">وسائط</button></div>
+        <div id="profilePostsGrid" class="profile-posts-grid"></div>
+    </div>
+
+    <!-- Edit Profile Modal -->
+    <div id="editProfileModal" class="edit-profile-modal">
+        <div class="edit-profile-content">
+            <div class="edit-profile-title">تعديل الملف الشخصي</div>
+            <input type="text" id="editName" class="edit-profile-input" placeholder="الاسم">
+            <textarea id="editBio" class="edit-profile-textarea" placeholder="السيرة الذاتية..."></textarea>
+            <div class="edit-profile-buttons">
+                <button class="edit-profile-cancel" onclick="closeEditProfileModal()">إلغاء</button>
+                <button class="edit-profile-save" onclick="saveProfileEdit()">حفظ التغييرات</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Panel -->
+    <div id="chatPanel" class="chat-panel">
+        <div class="chat-header"><div class="chat-user-info"><div class="chat-user-avatar" id="chatAvatar">👤</div><h3 id="chatUserName">محادثة</h3></div><button onclick="closeChat()" class="text-2xl">&times;</button></div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-input-area">
+            <button onclick="startRecordingChat()" id="chatRecordBtn"><i class="fas fa-microphone"></i></button>
+            <input type="file" id="chatImageInput" accept="image/*" style="display:none" onchange="sendChatImage(this)">
+            <button onclick="document.getElementById('chatImageInput').click()"><i class="fas fa-image"></i></button>
+            <input type="text" id="chatMessageInput" placeholder="اكتب رسالة...">
+            <button onclick="sendChatMessage()"><i class="fas fa-paper-plane"></i></button>
+        </div>
+    </div>
+
+    <!-- Conversations Panel -->
+    <div id="conversationsPanel" class="chat-panel">
+        <div class="chat-header"><h3 class="font-bold">الرسائل</h3><button onclick="closeConversations()" class="text-2xl">&times;</button></div>
+        <div id="conversationsList" class="conversations-list"></div>
+    </div>
+
+    <!-- Followers Panel -->
+    <div id="followersPanel" class="followers-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 id="followersTitle" class="font-bold">المتابعون</h3><button onclick="closeFollowers()" class="text-2xl">&times;</button></div>
+        <div id="followersList" class="followers-list"></div>
+    </div>
+
+    <!-- Notifications Panel -->
+    <div id="notificationsPanel" class="notifications-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 class="font-bold">الإشعارات</h3><button onclick="closeNotifications()" class="text-2xl">&times;</button></div>
+        <div id="notificationsList"></div>
+    </div>
+
+    <!-- Search Panel -->
+    <div id="searchPanel" class="search-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 class="font-bold">بحث</h3><button onclick="closeSearch()" class="text-2xl">&times;</button></div>
+        <input type="text" id="searchInput" class="search-input" placeholder="بحث عن مستخدمين..." onkeyup="searchAll()">
+        <div id="searchResults"></div>
+    </div>
+
+    <!-- Stories Panel -->
+    <div id="storiesPanel" class="stories-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 class="font-bold">القصص</h3><button onclick="closeStories()" class="text-2xl">&times;</button></div>
+        <div class="stories-row" id="storiesList"></div>
+    </div>
+
+    <!-- Admin Panel - Modern -->
+    <div id="adminPanel" class="admin-panel">
+        <div class="flex justify-between items-center p-4 border-b border-[#2f3336]"><h3 class="font-bold text-xl">🔧 لوحة التحكم</h3><button onclick="closeAdmin()" class="text-2xl">&times;</button></div>
+        <div id="adminStats" class="admin-stats"></div>
+        <div class="admin-section">
+            <div class="admin-section-title"><i class="fas fa-users text-[#1d9bf0]"></i> إدارة المستخدمين</div>
+            <div id="adminUsersList"></div>
+        </div>
+        <div class="admin-section">
+            <div class="admin-section-title"><i class="fas fa-file-alt text-[#1d9bf0]"></i> إدارة المنشورات</div>
+            <div id="adminPostsList"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Image Modal -->
+<div id="imageModal" class="image-modal" onclick="closeImageModal()">
+    <div class="close-modal" onclick="closeImageModal()">&times;</div>
+    <img id="modalImage" src="">
+</div>
+
+<script type="module" src="firebase-config.js"></script>
+<script type="module" src="script.js"></script>
+
+<script>
+    // Fullscreen Mode - إخفاء شريط العنوان عند التمرير
+    (function() {
+        let lastScrollTop = 0;
+        let urlBarHidden = false;
+        
+        // طلب فتح الموقع في وضع Fullscreen
+        function requestFullscreen() {
+            const docEl = document.documentElement;
+            if (docEl.requestFullscreen) {
+                docEl.requestFullscreen();
+            } else if (docEl.webkitRequestFullscreen) {
+                docEl.webkitRequestFullscreen();
+            } else if (docEl.msRequestFullscreen) {
+                docEl.msRequestFullscreen();
             }
         }
-        container.appendChild(commentDiv);
-    }
-    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد تعليقات بعد</div>';
-    document.getElementById('commentsPanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeComments = function() {
-    document.getElementById('commentsPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.showReplyInput = function(commentId) {
-    const replyDiv = document.getElementById(`reply-input-${commentId}`);
-    if (!replyDiv) return;
-    if (replyDiv.innerHTML) { replyDiv.innerHTML = ''; return; }
-    replyDiv.innerHTML = `<div class="flex gap-2 mt-2"><input type="text" id="reply-text-${commentId}" class="flex-1 bg-[#1a1a2a] border border-[#2f3336] rounded-full px-3 py-2 text-sm" placeholder="اكتب رداً..." onkeypress="if(event.key==='Enter') addReply('${commentId}')"><button onclick="addReply('${commentId}')" class="bg-[#1d9bf0] text-white px-4 py-2 rounded-full text-sm">نشر</button></div>`;
-};
-
-window.addReply = async function(commentId) {
-    const input = document.getElementById(`reply-text-${commentId}`);
-    const text = input?.value;
-    if (!text?.trim()) return;
-    const postRef = ref(db, `posts/${currentPostForComments}/comments/${commentId}/replies`);
-    await push(postRef, { userId: currentUser.uid, username: currentUserData?.name, text, timestamp: Date.now() });
-    if (input) input.value = '';
-    openCommentsModal(currentPostForComments);
-};
-
-window.addComment = async function() {
-    const input = document.getElementById('commentInput');
-    const text = input?.value;
-    if (!text?.trim() || !currentPostForComments) return;
-    await push(ref(db, `posts/${currentPostForComments}/comments`), {
-        userId: currentUser.uid, username: currentUserData?.name, text, replies: {}, timestamp: Date.now()
-    });
-    if (input) input.value = '';
-    openCommentsModal(currentPostForComments);
-    const post = allPosts.find(p => p.id === currentPostForComments);
-    if (post) addNotification(post.sender, 'comment', currentPostForComments);
-};
-
-// ========== NOTIFICATIONS ==========
-async function addNotification(targetUserId, type, postId = null) {
-    if (targetUserId === currentUser.uid) return;
-    const messages = { 
-        like: '❤️ أعجب بمنشورك', 
-        comment: '💬 علق على منشورك', 
-        retweet: '🔄 أعاد تغريد منشورك',
-        quote: '📝 اقتبس منشورك',
-        follow: '👥 بدأ بمتابعتك'
-    };
-    await push(ref(db, `notifications/${targetUserId}`), {
-        type, fromUserId: currentUser.uid, fromUsername: currentUserData?.name,
-        message: messages[type], postId: postId, timestamp: Date.now(), read: false
-    });
-    updateNotificationBadge();
-}
-
-function updateNotificationBadge() {
-    if (!currentUser?.uid) return;
-    onValue(ref(db, `notifications/${currentUser.uid}`), (snap) => {
-        const notifs = snap.val() || {};
-        const unread = Object.values(notifs).filter(n => !n.read).length;
-        const icon = document.getElementById('notifIcon');
-        if (icon) {
-            if (unread > 0) icon.innerHTML = `<i class="fas fa-bell"></i><span class="notification-badge">${unread > 9 ? '9+' : unread}</span>`;
-            else icon.innerHTML = '<i class="far fa-bell"></i>';
-        }
-    });
-}
-
-window.openNotifications = async function() {
-    const panel = document.getElementById('notificationsPanel');
-    if (!panel) return;
-    const snap = await get(child(ref(db), `notifications/${currentUser.uid}`));
-    const notifs = snap.val() || {};
-    const container = document.getElementById('notificationsList');
-    if (!container) return;
-    container.innerHTML = '';
-    const sorted = Object.entries(notifs).sort((a,b) => b[1].timestamp - a[1].timestamp);
-    for (const [key, n] of sorted) {
-        const icons = { like: '❤️', comment: '💬', retweet: '🔄', quote: '📝', follow: '👥' };
-        const bgColor = n.read ? '' : 'bg-[#1d9bf0]/10 border-r-4 border-[#1d9bf0]';
-        container.innerHTML += `
-            <div class="notification-item ${bgColor}" onclick="handleNotificationClick('${n.type}', '${n.fromUserId}', '${n.postId || ''}')">
-                <div class="text-2xl">${icons[n.type] || '🔔'}</div>
-                <div class="flex-1">
-                    <div class="font-bold">${escapeHtml(n.fromUsername)}</div>
-                    <div class="text-sm text-gray-500">${n.message}</div>
-                    <div class="text-xs text-gray-500 mt-1">${new Date(n.timestamp).toLocaleString()}</div>
-                </div>
-            </div>
-        `;
-        if (!n.read) await update(ref(db, `notifications/${currentUser.uid}/${key}`), { read: true });
-    }
-    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد إشعارات</div>';
-    panel.classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-    updateNotificationBadge();
-};
-
-window.handleNotificationClick = function(type, userId, postId) {
-    closeNotifications();
-    if (type === 'follow') viewProfile(userId);
-    else if (postId) openCommentsModal(postId);
-};
-
-window.closeNotifications = function() {
-    document.getElementById('notificationsPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-function showToast(message) {
-    let toast = document.getElementById('customToast');
-    if (!toast) {
-        toast = document.createElement('div');
-        toast.id = 'customToast';
-        document.body.appendChild(toast);
-    }
-    toast.innerText = message;
-    toast.style.opacity = '1';
-    setTimeout(() => { toast.style.opacity = '0'; }, 3000);
-}
-
-// ========== PROFILE ==========
-window.openMyProfile = function() { viewProfile(currentUser.uid); };
-
-window.viewProfile = async function(userId) {
-    if (!userId) return;
-    viewingProfileUserId = userId;
-    await loadProfileData(userId);
-    document.getElementById('profilePanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeProfile = function() {
-    document.getElementById('profilePanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-async function loadProfileData(userId) {
-    const userSnap = await get(child(ref(db), `users/${userId}`));
-    const user = userSnap.val();
-    if (!user) return;
-    
-    const coverEl = document.getElementById('profileCover');
-    if (coverEl) {
-        if (user.coverUrl) coverEl.style.background = `url(${user.coverUrl}) center/cover`;
-        else coverEl.style.background = 'linear-gradient(135deg, #1d9bf0, #f91880)';
-    }
-    
-    const avatarEl = document.getElementById('profileAvatar');
-    if (avatarEl) {
-        avatarEl.innerHTML = user.avatarUrl ? `<img src="${user.avatarUrl}">` : (user.name?.charAt(0) || '👤');
-    }
-    
-    document.getElementById('profileName').innerText = user.name;
-    document.getElementById('profileBio').innerText = user.bio || '✏️ أضف سيرة ذاتية';
-    
-    const userPosts = allPosts.filter(p => p.sender === userId);
-    document.getElementById('profilePostsCount').innerText = userPosts.length;
-    document.getElementById('profileFollowersCount').innerText = Object.keys(user.followers || {}).length;
-    document.getElementById('profileFollowingCount').innerText = Object.keys(user.following || {}).length;
-    
-    const grid = document.getElementById('profilePostsGrid');
-    if (grid) {
-        grid.innerHTML = userPosts.map(post => `
-            <div class="profile-post" onclick="openCommentsModal('${post.id}')">
-                ${post.mediaUrl ? (post.mediaType === 'image' ? `<img src="${post.mediaUrl}" loading="lazy">` : post.mediaType === 'video' ? `<video src="${post.mediaUrl}"></video>` : `<i class="fas fa-music text-2xl"></i>`) : `<i class="fas fa-file-alt text-2xl"></i>`}
-            </div>
-        `).join('');
-        if (userPosts.length === 0) grid.innerHTML = '<div class="col-span-3 text-center text-gray-500 py-10">لا توجد منشورات</div>';
-    }
-    
-    const buttonsDiv = document.getElementById('profileButtons');
-    if (buttonsDiv) {
-        buttonsDiv.innerHTML = '';
-        if (userId === currentUser.uid) {
-            buttonsDiv.innerHTML = `
-                <button class="profile-btn profile-btn-primary" onclick="openEditProfileModal()">✏️ تعديل الملف</button>
-                <button class="profile-btn profile-btn-secondary" onclick="logout()">🚪 تسجيل خروج</button>
-                ${isAdmin ? '<button class="profile-btn profile-btn-secondary" onclick="openAdmin()">🔧 لوحة التحكم</button>' : ''}
-            `;
-        } else {
-            const isFollowing = currentUserData?.following && currentUserData.following[userId];
-            buttonsDiv.innerHTML = `
-                <button class="profile-btn profile-btn-primary" onclick="toggleFollow('${userId}', this)">${isFollowing ? '✅ متابع' : '➕ متابعة'}</button>
-                <button class="profile-btn profile-btn-secondary" onclick="openPrivateChat('${userId}')"><i class="fas fa-envelope"></i> مراسلة</button>
-            `;
-        }
-    }
-    
-    setupProfileTabs(userPosts);
-}
-
-function setupProfileTabs(userPosts) {
-    const tabs = document.querySelectorAll('.profile-tab');
-    const grid = document.getElementById('profilePostsGrid');
-    if (!tabs.length || !grid) return;
-    tabs.forEach(tab => {
-        tab.onclick = () => {
-            tabs.forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            const filter = tab.dataset.tab;
-            let filtered = [...userPosts];
-            if (filter === 'media') filtered = userPosts.filter(p => p.mediaUrl && p.mediaType !== 'none');
-            grid.innerHTML = filtered.map(post => `
-                <div class="profile-post" onclick="openCommentsModal('${post.id}')">
-                    ${post.mediaUrl ? (post.mediaType === 'image' ? `<img src="${post.mediaUrl}" loading="lazy">` : post.mediaType === 'video' ? `<video src="${post.mediaUrl}"></video>` : `<i class="fas fa-music text-2xl"></i>`) : `<i class="fas fa-file-alt text-2xl"></i>`}
-                </div>
-            `).join('');
-            if (filtered.length === 0) grid.innerHTML = '<div class="col-span-3 text-center text-gray-500 py-10">لا توجد منشورات</div>';
-        };
-    });
-}
-
-// ========== EDIT PROFILE MODAL ==========
-window.openEditProfileModal = function() {
-    document.getElementById('editName').value = currentUserData?.name || '';
-    document.getElementById('editBio').value = currentUserData?.bio || '';
-    document.getElementById('editProfileModal').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeEditProfileModal = function() {
-    document.getElementById('editProfileModal').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.saveProfileEdit = async function() {
-    const newName = document.getElementById('editName').value;
-    const newBio = document.getElementById('editBio').value;
-    if (!newName.trim()) {
-        showToast('الاسم مطلوب');
-        return;
-    }
-    await update(ref(db, `users/${currentUser.uid}`), { name: newName.trim(), bio: newBio });
-    showToast('✅ تم تحديث الملف الشخصي');
-    closeEditProfileModal();
-    setTimeout(() => location.reload(), 1000);
-};
-
-// ========== UPLOAD AVATAR/COVER ==========
-window.changeAvatar = function() { document.getElementById('avatarInput')?.click(); };
-window.changeCover = function() { document.getElementById('coverInput')?.click(); };
-
-if (!document.getElementById('avatarInput')) {
-    const avatarInput = document.createElement('input');
-    avatarInput.type = 'file';
-    avatarInput.accept = 'image/*';
-    avatarInput.id = 'avatarInput';
-    avatarInput.style.display = 'none';
-    document.body.appendChild(avatarInput);
-    avatarInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        showToast('📤 جاري رفع الصورة...');
-        const result = await uploadMedia(file);
-        await update(ref(db, `users/${currentUser.uid}`), { avatarUrl: result.url });
-        showToast('✅ تم تحديث الصورة الشخصية');
-        location.reload();
-    });
-}
-
-if (!document.getElementById('coverInput')) {
-    const coverInput = document.createElement('input');
-    coverInput.type = 'file';
-    coverInput.accept = 'image/*';
-    coverInput.id = 'coverInput';
-    coverInput.style.display = 'none';
-    document.body.appendChild(coverInput);
-    coverInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        showToast('📤 جاري رفع الصورة...');
-        const result = await uploadMedia(file);
-        await update(ref(db, `users/${currentUser.uid}`), { coverUrl: result.url });
-        showToast('✅ تم تحديث صورة الغلاف');
-        location.reload();
-    });
-}
-
-// ========== FOLLOW ==========
-window.toggleFollow = async function(userId, btn) {
-    if (!currentUser || currentUser.uid === userId) return;
-    const userRef = ref(db, `users/${currentUser.uid}/following/${userId}`);
-    const targetRef = ref(db, `users/${userId}/followers/${currentUser.uid}`);
-    const snap = await get(userRef);
-    if (snap.exists()) {
-        await set(userRef, null); 
-        await set(targetRef, null);
-        if (btn) btn.innerText = '➕ متابعة';
-        showToast(`👋 توقفت عن متابعة ${allUsers[userId]?.name}`);
-    } else {
-        await set(userRef, true); 
-        await set(targetRef, true);
-        if (btn) btn.innerText = '✅ متابع';
-        addNotification(userId, 'follow');
-        showToast(`👥 بدأت بمتابعة ${allUsers[userId]?.name}`);
-    }
-    if (viewingProfileUserId === userId) await loadProfileData(userId);
-};
-
-window.openFollowersList = async function(type) {
-    document.getElementById('followersTitle').innerText = type === 'followers' ? 'المتابعون' : 'المتابَعون';
-    const panel = document.getElementById('followersPanel');
-    const container = document.getElementById('followersList');
-    const user = viewingProfileUserId ? allUsers[viewingProfileUserId] : currentUserData;
-    const list = type === 'followers' ? user?.followers : user?.following;
-    if (!container) return;
-    container.innerHTML = '';
-    if (list) {
-        for (const [uid] of Object.entries(list)) {
-            const u = allUsers[uid];
-            if (u) {
-                container.innerHTML += `<div class="follower-item" onclick="viewProfile('${uid}')"><div class="w-12 h-12 rounded-full bg-[#1d9bf0] overflow-hidden flex items-center justify-center">${u.avatarUrl ? `<img src="${u.avatarUrl}">` : (u.name?.charAt(0) || 'U')}</div><div><div class="font-bold">${escapeHtml(u.name)}</div><div class="text-sm text-gray-500">@${u.name?.toLowerCase().replace(/\s/g, '')}</div></div></div>`;
+        
+        // عند التمرير لأعلى أو لأسفل
+        window.addEventListener('scroll', function() {
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            
+            // عند التمرير لأسفل
+            if (scrollTop > lastScrollTop && scrollTop > 100) {
+                // إخفاء شريط العنوان إذا كان ظاهراً
+                if (!urlBarHidden) {
+                    requestFullscreen();
+                    urlBarHidden = true;
+                }
             }
-        }
-    }
-    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا يوجد مستخدمين</div>';
-    panel.classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeFollowers = function() {
-    document.getElementById('followersPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-// ========== CHAT ==========
-function getChatId(uid1, uid2) { return uid1 < uid2 ? `${uid1}_${uid2}` : `${uid2}_${uid1}`; }
-
-window.openConversations = async function() {
-    const panel = document.getElementById('conversationsPanel');
-    const container = document.getElementById('conversationsList');
-    if (!panel || !container) return;
-    const convSnap = await get(child(ref(db), `private_chats/${currentUser.uid}`));
-    const conversations = convSnap.val() || {};
-    container.innerHTML = '';
-    for (const [otherId, convData] of Object.entries(conversations)) {
-        const otherUser = allUsers[otherId];
-        if (otherUser) {
-            container.innerHTML += `<div class="conversation-item" onclick="openPrivateChat('${otherId}')"><div class="w-12 h-12 rounded-full bg-[#1d9bf0] overflow-hidden flex items-center justify-center">${otherUser.avatarUrl ? `<img src="${otherUser.avatarUrl}">` : (otherUser.name?.charAt(0) || 'U')}</div><div><div class="font-bold">${escapeHtml(otherUser.name)}</div><div class="text-sm text-gray-500">${convData.lastMessage?.substring(0, 40) || 'رسالة'}</div></div></div>`;
-        }
-    }
-    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد محادثات بعد</div>';
-    panel.classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeConversations = function() {
-    document.getElementById('conversationsPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.openPrivateChat = async function(otherUserId) {
-    currentChatUserId = otherUserId;
-    const user = allUsers[otherUserId];
-    document.getElementById('chatUserName').innerText = user?.name || 'مستخدم';
-    document.getElementById('chatAvatar').innerHTML = user?.avatarUrl ? `<img src="${user.avatarUrl}">` : (user?.name?.charAt(0) || 'U');
-    await loadPrivateMessages(otherUserId);
-    document.getElementById('chatPanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-    closeConversations();
-};
-
-window.closeChat = function() {
-    document.getElementById('chatPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-    currentChatUserId = null;
-};
-
-async function loadPrivateMessages(otherUserId) {
-    const container = document.getElementById('chatMessages');
-    if (!container) return;
-    container.innerHTML = '<div class="text-center text-gray-500 py-10">جاري التحميل...</div>';
-    const chatId = getChatId(currentUser.uid, otherUserId);
-    const messagesSnap = await get(child(ref(db), `private_messages/${chatId}`));
-    const messages = messagesSnap.val() || {};
-    container.innerHTML = '';
-    const sorted = Object.entries(messages).sort((a,b)=>a[1].timestamp-b[1].timestamp);
-    for (const [id, msg] of sorted) {
-        const isSent = msg.senderId === currentUser.uid;
-        const time = new Date(msg.timestamp).toLocaleTimeString();
-        let content = '';
-        if (msg.type === 'text') content = `<div class="message-bubble ${isSent ? 'sent' : 'received'}">${escapeHtml(msg.text)}</div>`;
-        else if (msg.type === 'image') content = `<img src="${msg.imageUrl}" class="message-image max-w-[200px] rounded-2xl cursor-pointer" onclick="window.open('${msg.imageUrl}')">`;
-        else if (msg.type === 'audio') content = `<div class="message-audio"><audio controls src="${msg.audioUrl}"></audio></div>`;
-        container.innerHTML += `<div class="chat-message ${isSent ? 'sent' : 'received'}"><div>${content}<div class="text-[10px] opacity-50 mt-1">${time}</div></div></div>`;
-    }
-    if (container.innerHTML === '') container.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد رسائل بعد</div>';
-    container.scrollTop = container.scrollHeight;
-}
-
-window.sendChatMessage = async function() {
-    const input = document.getElementById('chatMessageInput');
-    const text = input?.value.trim();
-    if (!text || !currentChatUserId) return;
-    const chatId = getChatId(currentUser.uid, currentChatUserId);
-    await push(ref(db, `private_messages/${chatId}`), { senderId: currentUser.uid, senderName: currentUserData?.name, text, type: 'text', timestamp: Date.now() });
-    await set(ref(db, `private_chats/${currentUser.uid}/${currentChatUserId}`), { lastMessage: text, lastTimestamp: Date.now(), withUser: currentChatUserId });
-    await set(ref(db, `private_chats/${currentChatUserId}/${currentUser.uid}`), { lastMessage: text, lastTimestamp: Date.now(), withUser: currentUser.uid });
-    if (input) input.value = '';
-    await loadPrivateMessages(currentChatUserId);
-};
-
-window.sendChatImage = async function(input) {
-    const file = input.files[0];
-    if (!file || !currentChatUserId) return;
-    const result = await uploadMedia(file);
-    const chatId = getChatId(currentUser.uid, currentChatUserId);
-    await push(ref(db, `private_messages/${chatId}`), { senderId: currentUser.uid, senderName: currentUserData?.name, imageUrl: result.url, type: 'image', timestamp: Date.now() });
-    await set(ref(db, `private_chats/${currentUser.uid}/${currentChatUserId}`), { lastMessage: '📷 صورة', lastTimestamp: Date.now(), withUser: currentChatUserId });
-    await set(ref(db, `private_chats/${currentChatUserId}/${currentUser.uid}`), { lastMessage: '📷 صورة', lastTimestamp: Date.now(), withUser: currentUser.uid });
-    input.value = '';
-    await loadPrivateMessages(currentChatUserId);
-};
-
-window.startRecordingChat = async function() {
-    const btn = document.getElementById('chatRecordBtn');
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
-        if (btn) btn.innerHTML = '<i class="fas fa-microphone"></i>';
-        return;
-    }
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
-        mediaRecorder.ondataavailable = (event) => { audioChunks.push(event.data); };
-        mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/mp3' });
-            const audioFile = new File([audioBlob], 'recording.mp3', { type: 'audio/mp3' });
-            const result = await uploadMedia(audioFile);
-            if (currentChatUserId) {
-                const chatId = getChatId(currentUser.uid, currentChatUserId);
-                await push(ref(db, `private_messages/${chatId}`), { senderId: currentUser.uid, senderName: currentUserData?.name, audioUrl: result.url, type: 'audio', timestamp: Date.now() });
-                await set(ref(db, `private_chats/${currentUser.uid}/${currentChatUserId}`), { lastMessage: '🎤 رسالة صوتية', lastTimestamp: Date.now(), withUser: currentChatUserId });
-                await set(ref(db, `private_chats/${currentChatUserId}/${currentUser.uid}`), { lastMessage: '🎤 رسالة صوتية', lastTimestamp: Date.now(), withUser: currentUser.uid });
-                await loadPrivateMessages(currentChatUserId);
+            // عند التمرير لأعلى
+            else if (scrollTop < lastScrollTop && scrollTop < 50) {
+                urlBarHidden = false;
             }
-            stream.getTracks().forEach(track => track.stop());
-        };
-        mediaRecorder.start();
-        if (btn) btn.innerHTML = '<i class="fas fa-stop-circle text-red-500"></i>';
-    } catch (err) { showToast('لا يمكن الوصول إلى الميكروفون'); }
-};
-
-// ========== STORIES ==========
-onValue(ref(db, 'stories'), (s) => {
-    const data = s.val();
-    const now = Date.now();
-    const activeStories = [];
-    if (data) {
-        Object.keys(data).forEach(key => {
-            const story = data[key];
-            if (story.timestamp && (now - story.timestamp) < 24*60*60*1000) activeStories.push({ id: key, ...story });
+            
+            lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
         });
-    }
-    renderStories(activeStories);
-});
-
-function renderStories(stories) {
-    const container = document.getElementById('storiesList');
-    if (!container) return;
-    container.innerHTML = `<div class="story-card" onclick="addStory()"><div class="add-story-btn"><i class="fas fa-plus"></i></div><div class="story-name">أضف قصة</div></div>`;
-    stories.forEach(story => {
-        const user = allUsers[story.sender] || { name: 'مستخدم', avatarUrl: '' };
-        container.innerHTML += `
-            <div class="story-card" onclick="window.open('${story.mediaUrl}','_blank')">
-                <div class="story-ring"><img class="story-avatar" src="${user.avatarUrl || 'https://via.placeholder.com/80'}"></div>
-                <div class="story-name">${escapeHtml(user.name)}</div>
-            </div>
-        `;
-    });
-}
-
-window.openStories = function() {
-    document.getElementById('storiesPanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeStories = function() {
-    document.getElementById('storiesPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.addStory = async function() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*,video/*';
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const result = await uploadMedia(file);
-        await push(ref(db, 'stories'), { mediaUrl: result.url, mediaType: result.type, sender: currentUser.uid, timestamp: Date.now() });
-        showToast('✅ تم إضافة القصة');
-    };
-    input.click();
-};
-
-// ========== SEARCH ==========
-window.openSearch = function() {
-    document.getElementById('searchPanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
-
-window.closeSearch = function() {
-    document.getElementById('searchPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.searchAll = function() {
-    const query = document.getElementById('searchInput').value.toLowerCase();
-    const resultsDiv = document.getElementById('searchResults');
-    if (!resultsDiv) return;
-    if (!query) { resultsDiv.innerHTML = ''; return; }
-    const users = Object.values(allUsers).filter(u => u.name?.toLowerCase().includes(query));
-    resultsDiv.innerHTML = users.map(u => `<div class="search-result" onclick="viewProfile('${u.uid}')"><div class="w-10 h-10 rounded-full bg-[#1d9bf0] overflow-hidden flex items-center justify-center">${u.avatarUrl ? `<img src="${u.avatarUrl}">` : (u.name?.charAt(0) || 'U')}</div><div><div class="font-bold">${escapeHtml(u.name)}</div><div class="text-sm text-gray-500">@${u.name?.toLowerCase().replace(/\s/g, '')}</div></div></div>`).join('');
-    if (users.length === 0) resultsDiv.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد نتائج</div>';
-};
-
-// ========== ADMIN ==========
-window.openAdmin = async function() {
-    if (!isAdmin) return;
-    const statsDiv = document.getElementById('adminStats');
-    const usersListDiv = document.getElementById('adminUsersList');
-    const postsListDiv = document.getElementById('adminPostsList');
-    
-    const totalUsers = Object.keys(allUsers).length;
-    const totalPosts = allPosts.length;
-    const totalLikes = allPosts.reduce((s,p)=>s+(p.likes||0),0);
-    const totalComments = allPosts.reduce((s,p)=>s+(p.comments ? Object.keys(p.comments).length : 0),0);
-    
-    if (statsDiv) {
-        statsDiv.innerHTML = `
-            <div class="admin-stat">
-                <div class="admin-stat-icon"><i class="fas fa-users"></i></div>
-                <div class="admin-stat-number">${totalUsers}</div>
-                <div class="admin-stat-label">مستخدمين</div>
-            </div>
-            <div class="admin-stat">
-                <div class="admin-stat-icon"><i class="fas fa-file-alt"></i></div>
-                <div class="admin-stat-number">${totalPosts}</div>
-                <div class="admin-stat-label">منشورات</div>
-            </div>
-            <div class="admin-stat">
-                <div class="admin-stat-icon"><i class="fas fa-heart text-pink-500"></i></div>
-                <div class="admin-stat-number">${totalLikes}</div>
-                <div class="admin-stat-label">إعجابات</div>
-            </div>
-            <div class="admin-stat">
-                <div class="admin-stat-icon"><i class="fas fa-comment text-blue-500"></i></div>
-                <div class="admin-stat-number">${totalComments}</div>
-                <div class="admin-stat-label">تعليقات</div>
-            </div>
-        `;
-    }
-    
-    if (usersListDiv) {
-        usersListDiv.innerHTML = '';
-        Object.entries(allUsers).forEach(([uid, u]) => {
-            if (uid !== currentUser.uid) {
-                usersListDiv.innerHTML += `
-                    <div class="admin-item">
-                        <div class="admin-item-info">
-                            <div class="admin-item-name">${escapeHtml(u.name)}</div>
-                            <div class="admin-item-email">${u.email}</div>
-                        </div>
-                        <button class="admin-delete-btn" onclick="adminDeleteUser('${uid}')"><i class="fas fa-trash"></i> حذف</button>
-                    </div>
-                `;
+        
+        // عند النقر على أي صورة - فتحها بملء الشاشة
+        document.addEventListener('click', function(e) {
+            const img = e.target.closest('.tweet-media img');
+            if (img && img.src) {
+                e.preventDefault();
+                e.stopPropagation();
+                openImageModal(img.src);
             }
         });
-        if (usersListDiv.innerHTML === '') usersListDiv.innerHTML = '<div class="text-center text-gray-500 py-10">لا يوجد مستخدمين آخرين</div>';
-    }
-    
-    if (postsListDiv) {
-        postsListDiv.innerHTML = '';
-        allPosts.slice(0, 30).forEach(post => {
-            postsListDiv.innerHTML += `
-                <div class="admin-item">
-                    <div class="admin-item-info">
-                        <div class="admin-item-name">${escapeHtml(post.senderName || 'مستخدم')}</div>
-                        <div class="admin-item-text">${post.text?.substring(0, 60) || 'منشور بدون نص'}</div>
-                        <div class="admin-item-email">${new Date(post.timestamp).toLocaleString()}</div>
-                    </div>
-                    <button class="admin-delete-btn" onclick="adminDeletePost('${post.id}')"><i class="fas fa-trash"></i> حذف</button>
-                </div>
-            `;
-        });
-        if (postsListDiv.innerHTML === '') postsListDiv.innerHTML = '<div class="text-center text-gray-500 py-10">لا توجد منشورات</div>';
-    }
-    
-    document.getElementById('adminPanel').classList.add('open');
-    document.getElementById('backBtn').style.display = 'flex';
-};
+    })();
+</script>
 
-window.closeAdmin = function() {
-    document.getElementById('adminPanel').classList.remove('open');
-    if (!document.querySelector('.panel.open')) document.getElementById('backBtn').style.display = 'none';
-};
-
-window.adminDeleteUser = async function(userId) {
-    if (!isAdmin || !confirm('⚠️ حذف هذا المستخدم وجميع منشوراته؟')) return;
-    const posts = allPosts.filter(p => p.sender === userId);
-    for (const post of posts) await set(ref(db, `posts/${post.id}`), null);
-    await set(ref(db, `users/${userId}`), null);
-    showToast('✅ تم حذف المستخدم');
-    location.reload();
-};
-
-window.adminDeletePost = async function(postId) {
-    if (!isAdmin || !confirm('⚠️ حذف هذا المنشور؟')) return;
-    await set(ref(db, `posts/${postId}`), null);
-    showToast('✅ تم حذف المنشور');
-    renderFeed();
-};
-
-// ========== NAVIGATION ==========
-window.switchTab = function(tab) {
-    const navItems = document.querySelectorAll('.nav-item');
-    navItems.forEach(t => t.classList.remove('active'));
-    if (event && event.target) {
-        const clicked = event.target.closest('.nav-item');
-        if (clicked) clicked.classList.add('active');
-    }
-    if (tab === 'home') {
-        closeCompose(); closeProfile(); closeChat(); closeConversations(); 
-        closeNotifications(); closeSearch(); closeStories(); closeComments(); 
-        closeFollowers(); closeAdmin(); closeEditProfileModal();
-    }
-};
-
-window.goToHome = function() { 
-    const homeBtn = document.querySelector('.nav-item i.fa-home')?.closest('.nav-item');
-    if (homeBtn) {
-        document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
-        homeBtn.classList.add('active');
-    }
-    closeCompose(); closeProfile(); closeChat(); closeConversations(); 
-    closeNotifications(); closeSearch(); closeStories(); closeComments(); 
-    closeFollowers(); closeAdmin(); closeEditProfileModal();
-    document.getElementById('backBtn').style.display = 'none'; 
-};
-
-window.goBack = function() {
-    if (document.getElementById('commentsPanel')?.classList.contains('open')) closeComments();
-    else if (document.getElementById('profilePanel')?.classList.contains('open')) closeProfile();
-    else if (document.getElementById('chatPanel')?.classList.contains('open')) closeChat();
-    else if (document.getElementById('conversationsPanel')?.classList.contains('open')) closeConversations();
-    else if (document.getElementById('notificationsPanel')?.classList.contains('open')) closeNotifications();
-    else if (document.getElementById('searchPanel')?.classList.contains('open')) closeSearch();
-    else if (document.getElementById('storiesPanel')?.classList.contains('open')) closeStories();
-    else if (document.getElementById('followersPanel')?.classList.contains('open')) closeFollowers();
-    else if (document.getElementById('adminPanel')?.classList.contains('open')) closeAdmin();
-    else if (document.getElementById('composePanel')?.classList.contains('open')) closeCompose();
-    else if (document.getElementById('editProfileModal')?.classList.contains('open')) closeEditProfileModal();
-    else goToHome();
-};
-
-window.toggleTheme = function() {
-    document.body.classList.toggle('light-mode');
-    localStorage.setItem('theme', document.body.classList.contains('light-mode') ? 'light' : 'dark');
-};
-
-// ========== AUTH STATE ==========
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        currentUser = user;
-        await loadUserData();
-        isAdmin = ADMIN_EMAILS.includes(currentUser.email);
-        document.getElementById('authScreen').style.display = 'none';
-        document.getElementById('mainApp').style.display = 'block';
-        updateNotificationBadge();
-        if (localStorage.getItem('theme') === 'light') document.body.classList.add('light-mode');
-        showToast(`👋 مرحباً ${currentUserData?.name || 'مستخدم'}`);
-    } else {
-        document.getElementById('authScreen').style.display = 'flex';
-        document.getElementById('mainApp').style.display = 'none';
-    }
-});
-
-console.log('✅ Sotwe Platform Ready - Full Features');
+</body>
+</html>
